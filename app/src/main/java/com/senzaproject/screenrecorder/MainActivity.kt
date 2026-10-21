@@ -5,8 +5,10 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
@@ -23,6 +25,7 @@ class MainActivity : Activity() {
     private lateinit var spFps: Spinner
     private lateinit var swDev: Switch
     private lateinit var swMic: Switch
+    private lateinit var swIsland: Switch
     private lateinit var btn: Button
     private lateinit var tvInfo: TextView
     private var resList = listOf<Caps.Res>()
@@ -31,12 +34,19 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        // Efek kaca: blur latar belakang (Android 12+ jika didukung perangkat)
+        if (Build.VERSION.SDK_INT >= 31) window.setBackgroundBlurRadius(90)
+
         spRes = findViewById(R.id.spRes)
         spFps = findViewById(R.id.spFps)
         swDev = findViewById(R.id.swDev)
         swMic = findViewById(R.id.swMic)
+        swIsland = findViewById(R.id.swIsland)
         btn = findViewById(R.id.btn)
         tvInfo = findViewById(R.id.tvInfo)
+
+        val ver = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrDefault("1.0")
+        findViewById<TextView>(R.id.tvAboutVer).text = "Screen Recorder  •  Versi $ver"
 
         resList = Caps.available(this)
         spRes.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, resList.map { it.label })
@@ -82,9 +92,15 @@ class MainActivity : Activity() {
         spFps.isEnabled = !rec
         swDev.isEnabled = !rec
         swMic.isEnabled = !rec
+        swIsland.isEnabled = !rec
     }
 
     private fun begin() {
+        if (swIsland.isChecked && !Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Izinkan \"Tampil di atas aplikasi lain\" untuk pill dinamis, lalu tekan Mulai Rekam lagi", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            return
+        }
         val need = mutableListOf<String>()
         if ((swMic.isChecked || swDev.isChecked) && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
             need += Manifest.permission.RECORD_AUDIO
@@ -128,9 +144,9 @@ class MainActivity : Activity() {
             putExtra("dpi", resources.displayMetrics.densityDpi)
             putExtra("dev", swDev.isChecked)
             putExtra("mic", swMic.isChecked)
+            putExtra("island", swIsland.isChecked)
         }
         startForegroundService(i)
-        // Kembali ke layar utama agar layar yang direkam adalah konten lain
         moveTaskToBack(true)
     }
 

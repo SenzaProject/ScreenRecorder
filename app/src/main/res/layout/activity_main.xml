@@ -2,95 +2,189 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#030405"
-    android:fillViewport="true">
+    android:fillViewport="true"
+    android:scrollbars="none">
 
 <LinearLayout
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:padding="24dp">
+    android:paddingLeft="20dp"
+    android:paddingRight="20dp"
+    android:paddingTop="48dp"
+    android:paddingBottom="32dp">
 
-    <ImageView
-        android:layout_width="96dp"
-        android:layout_height="96dp"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginTop="24dp"
-        android:src="@drawable/logo" />
-
-    <TextView
+    <!-- Header -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:gravity="center"
-        android:text="Screen Recorder"
-        android:textColor="#FFFFFF"
-        android:textSize="26sp"
-        android:textStyle="bold" />
+        android:background="@drawable/glass_card"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="18dp">
 
-    <TextView
+        <ImageView
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:src="@drawable/logo" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginLeft="16dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Screen Recorder"
+                android:textColor="#FFFFFF"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="SenzaProject"
+                android:textColor="#C9CCE0"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Pengaturan -->
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center"
-        android:text="SenzaProject"
-        android:textColor="#9AA0B4"
-        android:textSize="14sp" />
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="28dp"
-        android:text="Resolusi"
-        android:textColor="#FFFFFF" />
-
-    <Spinner
-        android:id="@+id/spRes"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content" />
-
-    <TextView
-        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:text="Frame rate"
-        android:textColor="#FFFFFF" />
+        android:background="@drawable/glass_card"
+        android:orientation="vertical"
+        android:padding="20dp">
 
-    <Spinner
-        android:id="@+id/spFps"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Resolusi"
+            android:textColor="#E6E8F5" />
 
-    <Switch
-        android:id="@+id/swDev"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="20dp"
-        android:text="Suara perangkat (internal)"
-        android:textColor="#FFFFFF" />
+        <Spinner
+            android:id="@+id/spRes"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:popupBackground="@drawable/glass_popup" />
 
-    <Switch
-        android:id="@+id/swMic"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="Suara luar (mikrofon)"
-        android:textColor="#FFFFFF" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Frame rate"
+            android:textColor="#E6E8F5" />
+
+        <Spinner
+            android:id="@+id/spFps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:popupBackground="@drawable/glass_popup" />
+
+        <Switch
+            android:id="@+id/swDev"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="Suara perangkat (internal)"
+            android:textColor="#FFFFFF" />
+
+        <Switch
+            android:id="@+id/swMic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Suara luar (mikrofon)"
+            android:textColor="#FFFFFF" />
+
+        <Switch
+            android:id="@+id/swIsland"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:checked="true"
+            android:text="Pill dinamis saat merekam"
+            android:textColor="#FFFFFF" />
+    </LinearLayout>
 
     <Button
         android:id="@+id/btn"
         android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:layout_marginTop="28dp"
-        android:backgroundTint="#E53935"
+        android:layout_height="60dp"
+        android:layout_marginTop="16dp"
+        android:background="@drawable/glass_button"
+        android:stateListAnimator="@null"
         android:text="Mulai Rekam"
-        android:textColor="#FFFFFF" />
+        android:textAllCaps="false"
+        android:textColor="#FFFFFF"
+        android:textSize="17sp"
+        android:textStyle="bold" />
 
     <TextView
         android:id="@+id/tvInfo"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:paddingLeft="6dp"
+        android:paddingRight="6dp"
+        android:textColor="#C9CCE0"
+        android:textSize="12.5sp" />
+
+    <!-- Tentang aplikasi -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
         android:layout_marginTop="20dp"
-        android:textColor="#9AA0B4"
-        android:textSize="13sp" />
+        android:background="@drawable/glass_card"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Tentang Aplikasi"
+            android:textColor="#FFFFFF"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvAboutVer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textColor="#C9CCE0"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:lineSpacingExtra="3dp"
+            android:text="Perekam layar ringan dengan resolusi 480p sampai 2K dan frame rate hingga 120 fps, menyesuaikan kemampuan perangkat. Bisa merekam suara perangkat dan suara luar (mikrofon), keduanya dapat dihidupkan atau dimatikan sendiri-sendiri."
+            android:textColor="#E6E8F5"
+            android:textSize="13.5sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:lineSpacingExtra="3dp"
+            android:text="•  480p, 720p, 1080p: 30 / 60 / 90 / 120 fps\n•  2K 120 fps (jika didukung perangkat)\n•  Suara internal dan mikrofon\n•  Pill dinamis dengan timer saat merekam\n•  Hasil tersimpan di Movies/ScreenRecorder"
+            android:textColor="#E6E8F5"
+            android:textSize="13.5sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Dikembangkan oleh SenzaProject"
+            android:textColor="#C9CCE0"
+            android:textSize="12.5sp" />
+    </LinearLayout>
 </LinearLayout>
 </ScrollView>

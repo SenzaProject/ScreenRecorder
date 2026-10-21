@@ -15,6 +15,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -41,6 +42,7 @@ class RecorderService : Service() {
     private var display: VirtualDisplay? = null
     private var pfd: ParcelFileDescriptor? = null
     private var uri: Uri? = null
+    private var island: IslandOverlay? = null
     private val main = Handler(Looper.getMainLooper())
 
     private val projectionCb = object : MediaProjection.Callback() {
@@ -65,6 +67,7 @@ class RecorderService : Service() {
         val dpi = i.getIntExtra("dpi", 320)
         val dev = i.getBooleanExtra("dev", false)
         val mic = i.getBooleanExtra("mic", false)
+        val isl = i.getBooleanExtra("island", false)
         val code = i.getIntExtra("code", 0)
         val data = i.getParcelableExtra<Intent>("data")
 
@@ -102,6 +105,9 @@ class RecorderService : Service() {
                 e.surface, null, null
             )
             isRecording = true
+            if (isl && Settings.canDrawOverlays(this)) {
+                island = IslandOverlay(this) { finish(null) }.also { it.show() }
+            }
             val audio = when {
                 dev && mic -> "suara perangkat + mikrofon"
                 dev -> "suara perangkat"
@@ -116,6 +122,8 @@ class RecorderService : Service() {
 
     private fun finish(error: String?) {
         if (projection == null && encoder == null) { stopSelf(); return }
+        island?.hide()
+        island = null
         val wasRecording = isRecording
         isRecording = false
         var failed = error
