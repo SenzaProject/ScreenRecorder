@@ -57,6 +57,12 @@ class ScreenEncoder(
     @Volatile var wrote = false
     @Volatile var error: String? = null
 
+    /** Ukuran video final (bisa berbeda dari yang diminta jika encoder menolak). */
+    var width = w
+        private set
+    var height = h
+        private set
+
     private var baseUs = 0L
     private var firstVideoPts = -1L
     private var firstVideoOffset = 0L
@@ -67,17 +73,7 @@ class ScreenEncoder(
 
     @SuppressLint("MissingPermission")
     fun prepare() {
-        val vf = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-            setInteger(MediaFormat.KEY_PRIORITY, 0)
-            setInteger(MediaFormat.KEY_OPERATING_RATE, fps)
-        }
-        vEnc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        vEnc.configure(vf, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        surface = vEnc.createInputSurface()
+        configureVideo()
 
         if (hasAudio) {
             if (deviceAudio) {
@@ -121,6 +117,62 @@ class ScreenEncoder(
         muxer = MediaMuxer(fd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     }
 
+    private fun align16(v: Int) = max(16, (v / 16.0).toInt() * 16 + if (v % 16 >= 8) 16 else 0)
+
+    /** Coba konfigurasi terbaik dulu; kalau ditolak turun bertahap (opsi -> ukuran 16-aligned). */
+    private fun configureVideo() {
+        val sizes = listOf(w to h, align16(w) to align16(h)).distinct()
+        var last: Exception? = null
+        for ((sw, sh) in sizes) {
+            for (level in 0..2) {
+                try {
+                    vEnc = createVideoEncoder(sw, sh, level)
+                    surface = vEnc.createInputSurface()
+                    width = sw; height = sh
+                    return
+                } catch (e: Exception) {
+                    last = e
+                    runCatching { vEnc.release() }
+                }
+            }
+        }
+        throw last ?: IllegalStateException("Encoder video tidak tersedia")
+    }
+
+    private fun createVideoEncoder(sw: Int, sh: Int, level: Int): MediaCodec {
+        val vf = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, sw, sh).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+            if (level < 2) {
+                setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
+                setInteger(MediaFormat.KEY_PRIORITY, 0)
+            }
+            if (level == 0) {
+                setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh)
+                setInteger(MediaFormat.KEY_OPERATING_RATE, fps)
+                if (android.os.Build.VERSION.SDK_INT >= 30) setInteger(MediaFormat.KEY_LATENCY, 1)
+                // Layar diam tetap menghasilkan frame konstan (fps rata-rata stabil, bukan turun saat layar tidak berubah)
+                setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000L / fps)
+            }
+        }
+        val name = runCatching {
+            android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).findEncoderForFormat(vf)
+        }.getOrNull()
+        val enc = if (name != null) MediaCodec.createByCodecName(name)
+        else MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        try {
+            val range = enc.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                .videoCapabilities.bitrateRange
+            vf.setInteger(MediaFormat.KEY_BIT_RATE, bitrate.coerceIn(range.lower, range.upper))
+            enc.configure(vf, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        } catch (e: Exception) {
+            runCatching { enc.release() }
+            throw e
+        }
+        return enc
+    }
+
     fun start() {
         baseUs = System.nanoTime() / 1000
         running = true
@@ -148,6 +200,7 @@ class ScreenEncoder(
 
     // ---------- video ----------
     private fun videoLoop() {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
         try {
             var signaled = false
             var eos = false
@@ -162,6 +215,7 @@ class ScreenEncoder(
 
     // ---------- audio ----------
     private fun audioLoop() {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
         try {
             val enc = aEnc!!
             devRec?.startRecording()

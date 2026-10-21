@@ -48,12 +48,36 @@ object Caps {
         val (sw, sh) = screenSize(ctx)
         val sMin = min(sw, sh)
         val sMax = max(sw, sh)
-        val s = align(shortSide)
-        val l = align((shortSide.toDouble() * sMax / sMin).roundToInt())
+        val (wa, ha) = alignment()
+        val shortA = if (sw <= sh) wa else ha
+        val longA = if (sw <= sh) ha else wa
+        val s = roundTo(shortSide, shortA)
+        val l = roundTo((shortSide.toDouble() * sMax / sMin).roundToInt(), longA)
         return if (sw <= sh) s to l else l to s
     }
 
-    private fun align(v: Int) = max(16, (v / 16.0).roundToInt() * 16)
+    /** Alignment ukuran dari encoder AVC perangkat (biasanya 2). Alignment kecil = tidak ada skala/letterbox = lebih tajam. */
+    private fun alignment(): Pair<Int, Int> {
+        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+        for (info in list) {
+            if (!info.isEncoder || info.supportedTypes.none { it.equals("video/avc", true) }) continue
+            val vc = runCatching { info.getCapabilitiesForType("video/avc").videoCapabilities }.getOrNull() ?: continue
+            return vc.widthAlignment.coerceAtLeast(2) to vc.heightAlignment.coerceAtLeast(2)
+        }
+        return 2 to 2
+    }
+
+    private fun roundTo(v: Int, a: Int) = max(a, (v.toDouble() / a).roundToInt() * a)
+
+    /** Bitrate berdasarkan jumlah piksel & fps. Lebih tinggi = lebih jernih. */
+    fun bitrateFor(w: Int, h: Int, fps: Int): Int {
+        val bpp = when {
+            fps >= 90 -> 0.14
+            fps >= 60 -> 0.16
+            else -> 0.20
+        }
+        return (w.toLong() * h * fps * bpp).toLong().coerceIn(3_000_000L, 100_000_000L).toInt()
+    }
 
     fun supports(w: Int, h: Int, fps: Int): Boolean {
         val list = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos

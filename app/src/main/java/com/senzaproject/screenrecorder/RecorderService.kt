@@ -94,19 +94,19 @@ class RecorderService : Service() {
             uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
             pfd = contentResolver.openFileDescriptor(uri!!, "rw")
 
-            val bitrate = (w.toLong() * h * fps / 10).coerceIn(2_000_000L, 100_000_000L).toInt()
+            val bitrate = Caps.bitrateFor(w, h, fps)
             val e = ScreenEncoder(w, h, fps, bitrate, pfd!!.fileDescriptor, p, dev, mic)
             encoder = e
             e.prepare()
             e.start()
             display = p.createVirtualDisplay(
-                "ScreenRecorder", w, h, dpi,
+                "ScreenRecorder", e.width, e.height, dpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 e.surface, null, null
             )
             isRecording = true
             if (isl && Settings.canDrawOverlays(this)) {
-                island = IslandOverlay(this) { finish(null) }.also { it.show() }
+                island = IslandOverlay(this).also { it.show() }
             }
             val audio = when {
                 dev && mic -> "suara perangkat + mikrofon"
@@ -114,7 +114,7 @@ class RecorderService : Service() {
                 mic -> "mikrofon"
                 else -> "tanpa suara"
             }
-            notifyState("Merekam ${w}x$h @ ${fps}fps ($audio)")
+            notifyState("Merekam ${e.width}x${e.height} @ ${fps}fps ($audio)")
         } catch (e: Exception) {
             finish("Gagal merekam: ${e.message}")
         }
