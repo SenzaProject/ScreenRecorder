@@ -10,5 +10,5 @@ Oleh **SenzaProject**
 Push ke GitHub, lalu buka tab **Actions** > **Build APK** > unduh artifact `Screen-Recorder-APK`.
 
 ## Pill dinamis
-Saat merekam muncul pill hitam di atas layar (titik merah + timer). Pill tidak bisa disentuh agar tidak mengganggu rekaman; berhenti lewat notifikasi atau tombol di aplikasi.
-Butuh izin "Tampil di atas aplikasi lain".
+Pill hitam (titik merah + timer) otomatis sejajar dengan lubang kamera depan. Ketuk pill untuk membuka kartu "Merekam layar" dengan tombol Pause dan Stop.
+Butuh izin "Tampil di atas aplikasi lain". Matikan "Ketuk pill untuk Pause / Stop" jika ingin pill hanya sebagai indikator.

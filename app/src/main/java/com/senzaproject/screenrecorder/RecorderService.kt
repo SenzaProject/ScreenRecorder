@@ -68,6 +68,7 @@ class RecorderService : Service() {
         val dev = i.getBooleanExtra("dev", false)
         val mic = i.getBooleanExtra("mic", false)
         val isl = i.getBooleanExtra("island", false)
+        val islCtl = i.getBooleanExtra("islandCtl", true)
         val code = i.getIntExtra("code", 0)
         val data = i.getParcelableExtra<Intent>("data")
 
@@ -106,7 +107,18 @@ class RecorderService : Service() {
             )
             isRecording = true
             if (isl && Settings.canDrawOverlays(this)) {
-                island = IslandOverlay(this).also { it.show() }
+                island = IslandOverlay(
+                    this, islCtl,
+                    {
+                        val enc = encoder
+                        if (enc == null) false else {
+                            val np = !enc.isPaused
+                            enc.setPaused(np)
+                            np
+                        }
+                    },
+                    { finish(null) }
+                ).also { it.show() }
             }
             val audio = when {
                 dev && mic -> "suara perangkat + mikrofon"

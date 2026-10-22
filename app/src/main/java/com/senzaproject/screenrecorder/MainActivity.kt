@@ -26,6 +26,7 @@ class MainActivity : Activity() {
     private lateinit var swDev: Switch
     private lateinit var swMic: Switch
     private lateinit var swIsland: Switch
+    private lateinit var swIslandCtl: Switch
     private lateinit var btn: Button
     private lateinit var tvInfo: TextView
     private var resList = listOf<Caps.Res>()
@@ -42,6 +43,8 @@ class MainActivity : Activity() {
         swDev = findViewById(R.id.swDev)
         swMic = findViewById(R.id.swMic)
         swIsland = findViewById(R.id.swIsland)
+        swIslandCtl = findViewById(R.id.swIslandCtl)
+        swIsland.setOnCheckedChangeListener { _, on -> swIslandCtl.isEnabled = on && !RecorderService.isRecording }
         btn = findViewById(R.id.btn)
         tvInfo = findViewById(R.id.tvInfo)
 
@@ -93,6 +96,7 @@ class MainActivity : Activity() {
         swDev.isEnabled = !rec
         swMic.isEnabled = !rec
         swIsland.isEnabled = !rec
+        swIslandCtl.isEnabled = !rec && swIsland.isChecked
     }
 
     private fun begin() {
@@ -145,6 +149,7 @@ class MainActivity : Activity() {
             putExtra("dev", swDev.isChecked)
             putExtra("mic", swMic.isChecked)
             putExtra("island", swIsland.isChecked)
+            putExtra("islandCtl", swIslandCtl.isChecked)
         }
         startForegroundService(i)
         moveTaskToBack(true)

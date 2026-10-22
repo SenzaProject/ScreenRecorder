@@ -57,6 +57,30 @@ class ScreenEncoder(
     @Volatile var wrote = false
     @Volatile var error: String? = null
 
+    @Volatile var isPaused = false
+        private set
+    @Volatile private var waitKey = false
+    private var pausedUs = 0L
+    private var pauseStartUs = 0L
+
+    /** Jeda / lanjutkan rekaman. Waktu jeda dipotong dari timeline video & audio. */
+    fun setPaused(p: Boolean) {
+        if (p == isPaused) return
+        if (p) {
+            pauseStartUs = System.nanoTime() / 1000
+            isPaused = true
+        } else {
+            pausedUs += System.nanoTime() / 1000 - pauseStartUs
+            waitKey = true
+            isPaused = false
+            runCatching {
+                vEnc.setParameters(android.os.Bundle().apply {
+                    putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+                })
+            }
+        }
+    }
+
     /** Ukuran video final (bisa berbeda dari yang diminta jika encoder menolak). */
     var width = w
         private set
@@ -228,6 +252,7 @@ class ScreenEncoder(
             while (running) {
                 if (devRec != null && !readFully(devRec!!, dev)) break
                 if (micRec != null && !readFully(micRec!!, mic)) break
+                if (isPaused) { drain(enc, false, 0); continue }
                 if (startUs < 0) {
                     startUs = max(0L, System.nanoTime() / 1000 - baseUs - FRAMES * 1_000_000L / SR)
                 }
@@ -294,10 +319,16 @@ class ScreenEncoder(
                     val buf = enc.getOutputBuffer(i)!!
                     if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) info.size = 0
                     if (info.size > 0) {
-                        adjustPts(isVideo, info)
-                        buf.position(info.offset)
-                        buf.limit(info.offset + info.size)
-                        write(isVideo, buf, info)
+                        val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+                        // saat dijeda buang frame video; setelah lanjut, mulai lagi dari keyframe
+                        val skip = isVideo && (isPaused || (waitKey && !key))
+                        if (!skip) {
+                            if (isVideo) waitKey = false
+                            adjustPts(isVideo, info)
+                            buf.position(info.offset)
+                            buf.limit(info.offset + info.size)
+                            write(isVideo, buf, info)
+                        }
                     }
                     enc.releaseOutputBuffer(i, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return true
@@ -312,7 +343,7 @@ class ScreenEncoder(
                 firstVideoPts = info.presentationTimeUs
                 firstVideoOffset = max(0L, System.nanoTime() / 1000 - baseUs)
             }
-            var p = info.presentationTimeUs - firstVideoPts + firstVideoOffset
+            var p = info.presentationTimeUs - firstVideoPts + firstVideoOffset - pausedUs
             if (p < lastVideoPts) p = lastVideoPts
             lastVideoPts = p
             info.presentationTimeUs = p

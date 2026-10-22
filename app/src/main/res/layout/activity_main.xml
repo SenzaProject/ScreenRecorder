@@ -110,6 +110,15 @@
             android:checked="true"
             android:text="Pill dinamis saat merekam"
             android:textColor="#FFFFFF" />
+
+        <Switch
+            android:id="@+id/swIslandCtl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:checked="true"
+            android:text="Ketuk pill untuk Pause / Stop"
+            android:textColor="#FFFFFF" />
     </LinearLayout>
 
     <Button
@@ -174,7 +183,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
             android:lineSpacingExtra="3dp"
-            android:text="•  480p, 720p, 1080p: 30 / 60 / 90 / 120 fps\n•  2K 120 fps (jika didukung perangkat)\n•  Suara internal dan mikrofon\n•  Pill dinamis dengan timer saat merekam\n•  Hasil tersimpan di Movies/ScreenRecorder"
+            android:text="•  480p, 720p, 1080p: 30 / 60 / 90 / 120 fps\n•  2K 120 fps (jika didukung perangkat)\n•  Suara internal dan mikrofon\n•  Pill dinamis sejajar kamera depan, ketuk untuk Pause / Stop\n•  Hasil tersimpan di Movies/ScreenRecorder"
             android:textColor="#E6E8F5"
             android:textSize="13.5sp" />
 
