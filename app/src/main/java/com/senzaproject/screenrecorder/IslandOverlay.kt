@@ -247,7 +247,7 @@ class IslandOverlay(
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             y = pillLp?.y ?: dp(10)
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-            title = "ScreenRecorderIslandCard"
+            this.title = "ScreenRecorderIslandCard"
         }
         card = row; cardTimer = ct; cardTitle = title; cardPauseIcon = pauseIcon
         setPausedUi(paused)
