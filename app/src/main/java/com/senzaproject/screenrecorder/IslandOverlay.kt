@@ -3,6 +3,7 @@ package com.senzaproject.screenrecorder
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
@@ -31,6 +32,8 @@ import kotlin.math.min
  */
 class IslandOverlay(
     private val ctx: Context,
+    /** TYPE_ACCESSIBILITY_OVERLAY (di atas status bar, bisa disentuh) atau TYPE_APPLICATION_OVERLAY. */
+    private val windowType: Int,
     private val controls: Boolean,
     /** Dipanggil saat tombol Pause/Resume ditekan. Mengembalikan status dijeda yang baru. */
     private val onTogglePause: () -> Boolean,
@@ -65,10 +68,10 @@ class IslandOverlay(
     private fun dp(v: Int) = (v * ctx.resources.displayMetrics.density).toInt()
 
     // ---------- geometri: simetris terhadap kamera depan ----------
-    /** @return [lebar, tinggi, x, y] pill dalam piksel layar */
-    private fun geometry(cutout: DisplayCutout?): IntArray {
+    /** @return [lebar, tinggi, x, y] pill dalam piksel layar. [rects] harus dalam koordinat LAYAR. */
+    private fun geometry(rects: List<Rect>?): IntArray {
         val (sw, _) = Caps.screenSize(ctx)
-        val r = cutout?.boundingRects
+        val r = rects
             ?.filter { it.top <= dp(2) && it.width() < sw / 2 && it.width() > 0 }
             ?.minByOrNull { abs(it.centerX() - sw / 2) }
         if (r == null) {
@@ -82,10 +85,19 @@ class IslandOverlay(
         return intArrayOf(w, h, x, y)
     }
 
-    private fun applyCutout(c: DisplayCutout?) {
+    /** Cutout dalam koordinat layar (bukan koordinat window pill). */
+    private fun screenCutoutRects(): List<Rect>? = runCatching {
+        if (android.os.Build.VERSION.SDK_INT >= 30)
+            wm.currentWindowMetrics.windowInsets.displayCutout?.boundingRects
+        else null
+    }.getOrNull()
+
+    private var cutoutFromInsetsDone = false
+
+    private fun applyGeometry(rects: List<Rect>?) {
         val lp = pillLp ?: return
         val v = pillView ?: return
-        val g = geometry(c)
+        val g = geometry(rects)
         if (g[0] == lp.width && g[1] == lp.height && g[2] == lp.x && g[3] == lp.y) return
         lp.width = g[0]; lp.height = g[1]; lp.x = g[2]; lp.y = g[3]
         (v.background as? GradientDrawable)?.cornerRadius = g[1] / 2f
@@ -94,7 +106,16 @@ class IslandOverlay(
 
     private inner class PillRoot(c: Context) : FrameLayout(c) {
         override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
-            applyCutout(insets.displayCutout)
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                // koordinat layar yang benar (rect dari insets window bersifat relatif ke window pill)
+                applyGeometry(screenCutoutRects())
+            } else if (!cutoutFromInsetsDone) {
+                // Android 10: rect relatif ke window -> geser dengan posisi window; cukup sekali
+                cutoutFromInsetsDone = true
+                val lp = pillLp
+                val rects = insets.displayCutout?.boundingRects?.map { Rect(it).apply { offset(lp?.x ?: 0, lp?.y ?: 0) } }
+                applyGeometry(rects)
+            }
             return super.onApplyWindowInsets(insets)
         }
     }
@@ -130,10 +151,7 @@ class IslandOverlay(
         if (pillView != null) return
         startMs = SystemClock.elapsedRealtime()
 
-        val initialCutout = runCatching {
-            if (android.os.Build.VERSION.SDK_INT >= 30) wm.currentWindowMetrics.windowInsets.displayCutout else null
-        }.getOrNull()
-        val g = geometry(initialCutout)
+        val g = geometry(screenCutoutRects())
 
         val root = PillRoot(ctx).apply {
             background = GradientDrawable().apply { setColor(Color.BLACK); cornerRadius = g[1] / 2f }
@@ -159,7 +177,7 @@ class IslandOverlay(
         if (!controls) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 
         val lp = WindowManager.LayoutParams(
-            g[0], g[1], WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, flags, PixelFormat.TRANSLUCENT
+            g[0], g[1], windowType, flags, PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = g[2]; y = g[3]
@@ -236,7 +254,7 @@ class IslandOverlay(
         row.addView(stopBtn, LinearLayout.LayoutParams(dp(42), dp(42)).apply { leftMargin = dp(10) })
 
         val lp = WindowManager.LayoutParams(
-            cardW, cardH, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            cardW, cardH, windowType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
@@ -247,7 +265,7 @@ class IslandOverlay(
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             y = pillLp?.y ?: dp(10)
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-            this.title = "ScreenRecorderIslandCard"
+            title = "ScreenRecorderIslandCard"
         }
         card = row; cardTimer = ct; cardTitle = title; cardPauseIcon = pauseIcon
         setPausedUi(paused)

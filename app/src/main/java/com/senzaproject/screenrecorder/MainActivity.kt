@@ -28,6 +28,7 @@ class MainActivity : Activity() {
     private lateinit var swIsland: Switch
     private lateinit var swIslandCtl: Switch
     private lateinit var btn: Button
+    private lateinit var btnA11y: Button
     private lateinit var tvInfo: TextView
     private var resList = listOf<Caps.Res>()
     private var fpsList = listOf<Int>()
@@ -46,6 +47,11 @@ class MainActivity : Activity() {
         swIslandCtl = findViewById(R.id.swIslandCtl)
         swIsland.setOnCheckedChangeListener { _, on -> swIslandCtl.isEnabled = on && !RecorderService.isRecording }
         btn = findViewById(R.id.btn)
+        btnA11y = findViewById(R.id.btnA11y)
+        btnA11y.setOnClickListener {
+            Toast.makeText(this, "Cari \"Screen Recorder\" lalu aktifkan. Jika diblokir: Info aplikasi > menu titik tiga > Izinkan setelan terbatas", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
         tvInfo = findViewById(R.id.tvInfo)
 
         val ver = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrDefault("1.0")
@@ -96,11 +102,12 @@ class MainActivity : Activity() {
         swDev.isEnabled = !rec
         swMic.isEnabled = !rec
         swIsland.isEnabled = !rec
+        btnA11y.visibility = if (IslandAccessibilityService.instance != null) View.GONE else View.VISIBLE
         swIslandCtl.isEnabled = !rec && swIsland.isChecked
     }
 
     private fun begin() {
-        if (swIsland.isChecked && !Settings.canDrawOverlays(this)) {
+        if (swIsland.isChecked && IslandAccessibilityService.instance == null && !Settings.canDrawOverlays(this)) {
             Toast.makeText(this, "Izinkan \"Tampil di atas aplikasi lain\" untuk pill dinamis, lalu tekan Mulai Rekam lagi", Toast.LENGTH_LONG).show()
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
             return

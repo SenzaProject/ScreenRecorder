@@ -119,6 +119,18 @@
             android:checked="true"
             android:text="Ketuk pill untuk Pause / Stop"
             android:textColor="#FFFFFF" />
+
+        <Button
+            android:id="@+id/btnA11y"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/glass_card"
+            android:stateListAnimator="@null"
+            android:text="Aktifkan sentuh pill (Aksesibilitas)"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
     </LinearLayout>
 
     <Button

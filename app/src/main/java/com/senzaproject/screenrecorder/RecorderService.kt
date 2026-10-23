@@ -16,6 +16,7 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.view.WindowManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -106,19 +107,23 @@ class RecorderService : Service() {
                 e.surface, null, null
             )
             isRecording = true
-            if (isl && Settings.canDrawOverlays(this)) {
-                island = IslandOverlay(
-                    this, islCtl,
-                    {
-                        val enc = encoder
-                        if (enc == null) false else {
-                            val np = !enc.isPaused
-                            enc.setPaused(np)
-                            np
-                        }
-                    },
-                    { finish(null) }
-                ).also { it.show() }
+            if (isl) {
+                val toggle: () -> Boolean = {
+                    val enc = encoder
+                    if (enc == null) false else {
+                        val np = !enc.isPaused
+                        enc.setPaused(np)
+                        np
+                    }
+                }
+                val acc = IslandAccessibilityService.instance
+                island = when {
+                    // Lewat layanan aksesibilitas: window berada di ATAS status bar sehingga pill bisa disentuh
+                    acc != null -> IslandOverlay(acc, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, islCtl, toggle) { finish(null) }
+                    Settings.canDrawOverlays(this) -> IslandOverlay(this, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, islCtl, toggle) { finish(null) }
+                    else -> null
+                }
+                island?.show()
             }
             val audio = when {
                 dev && mic -> "suara perangkat + mikrofon"
