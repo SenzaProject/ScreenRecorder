@@ -12,6 +12,7 @@ import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewTreeObserver
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
@@ -284,7 +285,6 @@ class IslandOverlay(
         wm.addView(row, lp)
 
         // pill "mengembang" menjadi kartu: bentuk membesar dulu, isi muncul menyusul
-        pillView?.visibility = View.INVISIBLE
         val pillCenterX = (pillLp?.x ?: 0) + pw / 2f
         row.pivotX = cardW / 2f
         row.pivotY = 0f
@@ -292,11 +292,20 @@ class IslandOverlay(
         row.scaleY = ph.toFloat() / cardH
         row.translationX = pillCenterX - sw / 2f
         for (i in 0 until row.childCount) row.getChildAt(i).alpha = 0f
-        row.animate().scaleX(1f).scaleY(1f).translationX(0f).setDuration(420)
-            .setInterpolator(OvershootInterpolator(0.8f)).start()
-        for (i in 0 until row.childCount) {
-            row.getChildAt(i).animate().alpha(1f).setStartDelay(150).setDuration(220).start()
+        val startAnim = {
+            row.animate().scaleX(1f).scaleY(1f).translationX(0f).setDuration(380)
+                .setInterpolator(OvershootInterpolator(0.5f)).start()
+            for (i in 0 until row.childCount) {
+                row.getChildAt(i).animate().alpha(1f).setStartDelay(140).setDuration(200).start()
+            }
         }
+        row.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                row.viewTreeObserver.removeOnPreDrawListener(this)
+                startAnim()
+                return true
+            }
+        })
         main.postDelayed(collapseRunnable, 6000)
     }
 
@@ -312,7 +321,6 @@ class IslandOverlay(
         c.animate().scaleX(pw.toFloat() / max(1, c.width)).scaleY(ph.toFloat() / max(1, c.height))
             .translationX(pillCenterX - sw / 2f).setDuration(260)
             .setInterpolator(DecelerateInterpolator()).withEndAction {
-                pillView?.visibility = View.VISIBLE
                 runCatching { wm.removeView(c) }
             }.start()
     }
