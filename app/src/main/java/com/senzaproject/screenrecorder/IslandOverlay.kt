@@ -226,11 +226,11 @@ class IslandOverlay(
         }
         top.addView(ct, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6) })
         left.addView(top)
-        val title = TextView(ctx).apply {
+        val titleTv = TextView(ctx).apply {
             text = if (paused) "Dijeda" else "Merekam layar"
             setTextColor(Color.WHITE); textSize = 16f
         }
-        left.addView(title)
+        left.addView(titleTv)
         row.addView(left, LinearLayout.LayoutParams(0, -2, 1f))
 
         val pauseBtn = FrameLayout(ctx).apply { background = circle(Color.parseColor("#3A3A3C"), false) }
@@ -267,7 +267,7 @@ class IslandOverlay(
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             title = "ScreenRecorderIslandCard"
         }
-        card = row; cardTimer = ct; cardTitle = title; cardPauseIcon = pauseIcon
+        card = row; cardTimer = ct; cardTitle = titleTv; cardPauseIcon = pauseIcon
         setPausedUi(paused)
         wm.addView(row, lp)
 
