@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="a11y_desc">Hanya dipakai untuk menampilkan pill perekaman (timer, Pause, Stop) di atas status bar agar bisa disentuh. Tidak membaca layar atau data apa pun.</string>
+    <string name="app_name">SP Photos</string>
 </resources>

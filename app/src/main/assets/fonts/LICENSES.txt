@@ -1,0 +1,3 @@
+Font yang dibundel di SP Photos:
+- Poppins, Lora, Carlito, Caladea, Liberation Sans/Serif/Mono, GFS Baskerville: SIL Open Font License 1.1
+- DejaVu Sans Condensed / Serif / Mono: Bitstream Vera License (bebas dipakai & didistribusikan)
