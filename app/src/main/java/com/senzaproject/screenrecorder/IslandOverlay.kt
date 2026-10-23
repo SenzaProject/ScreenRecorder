@@ -9,12 +9,12 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.view.DisplayCutout
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -25,10 +25,10 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Dynamic bar:
- *  - Pill hitam berisi titik merah + timer, otomatis sejajar (simetris) dengan lubang kamera depan.
- *  - Ketuk pill -> mengembang jadi kartu "Merekam layar" dengan tombol Pause dan Stop.
- * Ukuran pill tetap; kartu adalah window terpisah (pill tidak pernah di-resize saat disentuh).
+ * Dynamic bar (mengikuti gaya bar perekaman ColorOS):
+ *  - Pill hitam ramping: titik merah berdenyut (kiri) + timer merah (kanan), sejajar lubang kamera depan.
+ *  - Ketuk pill -> pill "mengembang" jadi kartu "Merekam layar" dengan tombol Pause dan Stop.
+ * Pill tidak pernah di-resize saat disentuh; kartu adalah window terpisah.
  */
 class IslandOverlay(
     private val ctx: Context,
@@ -48,10 +48,11 @@ class IslandOverlay(
     private var pillDot: View? = null
     private val pillDotBg = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(RED) }
 
-    private var card: View? = null
+    private var card: LinearLayout? = null
     private var cardTimer: TextView? = null
     private var cardTitle: TextView? = null
-    private var cardPauseIcon: TextView? = null
+    private var cardBars: View? = null
+    private var cardPlay: View? = null
     private val cardDotBg = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(RED) }
 
     private var startMs = 0L
@@ -66,22 +67,23 @@ class IslandOverlay(
     }
 
     private fun dp(v: Int) = (v * ctx.resources.displayMetrics.density).toInt()
+    private fun dpf(v: Float) = v * ctx.resources.displayMetrics.density
 
-    // ---------- geometri: simetris terhadap kamera depan ----------
+    // ---------- geometri: ramping & simetris terhadap kamera depan ----------
     /** @return [lebar, tinggi, x, y] pill dalam piksel layar. [rects] harus dalam koordinat LAYAR. */
     private fun geometry(rects: List<Rect>?): IntArray {
         val (sw, _) = Caps.screenSize(ctx)
+        val h = dp(36)
         val r = rects
             ?.filter { it.top <= dp(2) && it.width() < sw / 2 && it.width() > 0 }
             ?.minByOrNull { abs(it.centerX() - sw / 2) }
         if (r == null) {
-            val w = dp(124); val h = dp(34)
-            return intArrayOf(w, h, sw / 2 - w / 2, dp(10))
+            val w = dp(148)
+            return intArrayOf(w, h, sw / 2 - w / 2, dp(4))
         }
-        val h = max(dp(34), r.height() + dp(12))
-        val w = max(dp(124), r.width() + dp(92))
+        val w = max(dp(148), r.width() + dp(28))
         val x = (r.centerX() - w / 2).coerceIn(0, max(0, sw - w))
-        val y = max(0, r.centerY() - h / 2)
+        val y = max(dp(4), r.centerY() - h / 2)
         return intArrayOf(w, h, x, y)
     }
 
@@ -107,10 +109,8 @@ class IslandOverlay(
     private inner class PillRoot(c: Context) : FrameLayout(c) {
         override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
-                // koordinat layar yang benar (rect dari insets window bersifat relatif ke window pill)
                 applyGeometry(screenCutoutRects())
             } else if (!cutoutFromInsetsDone) {
-                // Android 10: rect relatif ke window -> geser dengan posisi window; cukup sekali
                 cutoutFromInsetsDone = true
                 val lp = pillLp
                 val rects = insets.displayCutout?.boundingRects?.map { Rect(it).apply { offset(lp?.x ?: 0, lp?.y ?: 0) } }
@@ -139,35 +139,37 @@ class IslandOverlay(
             cardTimer?.text = t
             if (!paused) {
                 dim = !dim
-                pillDot?.animate()?.alpha(if (dim) 0.35f else 1f)?.setDuration(300)?.start()
+                pillDot?.animate()?.alpha(if (dim) 0.3f else 1f)?.setDuration(300)?.start()
             }
             main.postDelayed(this, 1000)
         }
     }
     private val collapseRunnable = Runnable { collapse() }
 
+    private fun timerText(size: Float) = TextView(ctx).apply {
+        setTextColor(RED)
+        textSize = size
+        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        fontFeatureSettings = "tnum"
+        includeFontPadding = false
+    }
+
     // ---------- pill ----------
     fun show() {
         if (pillView != null) return
         startMs = SystemClock.elapsedRealtime()
-
         val g = geometry(screenCutoutRects())
 
         val root = PillRoot(ctx).apply {
             background = GradientDrawable().apply { setColor(Color.BLACK); cornerRadius = g[1] / 2f }
         }
         val d = View(ctx).apply { background = pillDotBg }
-        root.addView(d, FrameLayout.LayoutParams(dp(10), dp(10), Gravity.START or Gravity.CENTER_VERTICAL).apply { leftMargin = dp(16) })
-        val t = TextView(ctx).apply {
-            text = "00:00"
-            setTextColor(RED)
-            textSize = 13f
-            typeface = Typeface.MONOSPACE
-        }
+        root.addView(d, FrameLayout.LayoutParams(dp(13), dp(13), Gravity.START or Gravity.CENTER_VERTICAL).apply { leftMargin = dp(15) })
+        val t = timerText(16f).apply { text = "00:00" }
         root.addView(t, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.END or Gravity.CENTER_VERTICAL
-        ).apply { rightMargin = dp(16) })
+        ).apply { rightMargin = dp(14) })
         if (controls) root.setOnClickListener { expand() }
 
         var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -176,9 +178,7 @@ class IslandOverlay(
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
         if (!controls) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 
-        val lp = WindowManager.LayoutParams(
-            g[0], g[1], windowType, flags, PixelFormat.TRANSLUCENT
-        ).apply {
+        val lp = WindowManager.LayoutParams(g[0], g[1], windowType, flags, PixelFormat.TRANSLUCENT).apply {
             gravity = Gravity.TOP or Gravity.START
             x = g[2]; y = g[3]
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -188,8 +188,8 @@ class IslandOverlay(
         wm.addView(root, lp)
 
         root.alpha = 0f
-        root.scaleX = 0.4f
-        root.animate().alpha(1f).scaleX(1f).setDuration(450).setInterpolator(OvershootInterpolator(1.2f)).start()
+        root.scaleX = 0.5f
+        root.animate().alpha(1f).scaleX(1f).setDuration(380).setInterpolator(OvershootInterpolator(1.1f)).start()
         main.postDelayed(tick, 1000)
     }
 
@@ -197,14 +197,16 @@ class IslandOverlay(
     private fun circle(fill: Int?, ring: Boolean): GradientDrawable = GradientDrawable().apply {
         shape = GradientDrawable.OVAL
         if (fill != null) setColor(fill)
-        if (ring) setStroke(dp(2), Color.WHITE)
+        if (ring) setStroke(dp(2), Color.parseColor("#F2F2F7"))
     }
 
     private fun expand() {
         if (card != null || !controls) return
         val (sw, _) = Caps.screenSize(ctx)
-        val cardW = min(sw - dp(24), dp(380))
-        val cardH = dp(68)
+        val cardW = min(sw - dp(19), dp(440))
+        val cardH = dp(81)
+        val pw = pillLp?.width ?: dp(148)
+        val ph = pillLp?.height ?: dp(36)
 
         val row = object : LinearLayout(ctx) {
             override fun onTouchEvent(e: MotionEvent): Boolean {
@@ -214,44 +216,54 @@ class IslandOverlay(
         }.apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(22), 0, dp(14), 0)
-            background = GradientDrawable().apply { setColor(Color.BLACK); cornerRadius = dp(34).toFloat() }
+            setPadding(dp(22), 0, dp(20), 0)
+            background = GradientDrawable().apply { setColor(Color.BLACK); cornerRadius = dpf(40.5f) }
         }
 
         val left = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         val top = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        top.addView(View(ctx).apply { background = cardDotBg }, LinearLayout.LayoutParams(dp(8), dp(8)))
-        val ct = TextView(ctx).apply {
-            text = fmt(elapsedSec()); setTextColor(RED); textSize = 13f; typeface = Typeface.MONOSPACE
-        }
+        top.addView(View(ctx).apply { background = cardDotBg }, LinearLayout.LayoutParams(dp(12), dp(12)))
+        val ct = timerText(15f).apply { text = fmt(elapsedSec()) }
         top.addView(ct, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6) })
         left.addView(top)
         val titleTv = TextView(ctx).apply {
             text = if (paused) "Dijeda" else "Merekam layar"
-            setTextColor(Color.WHITE); textSize = 16f
+            setTextColor(Color.parseColor("#F2F2F7")); textSize = 20f
+            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            includeFontPadding = false
         }
-        left.addView(titleTv)
+        left.addView(titleTv, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(4) })
         row.addView(left, LinearLayout.LayoutParams(0, -2, 1f))
 
-        val pauseBtn = FrameLayout(ctx).apply { background = circle(Color.parseColor("#3A3A3C"), false) }
-        val pauseIcon = TextView(ctx).apply {
-            text = if (paused) "▶" else "❚❚"; setTextColor(Color.WHITE); textSize = 13f; gravity = Gravity.CENTER
+        // tombol pause: lingkaran abu gelap + dua batang putih (atau segitiga saat dijeda)
+        val pauseBtn = FrameLayout(ctx).apply { background = circle(Color.parseColor("#2C2C2E"), false) }
+        val bars = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        for (i in 0..1) {
+            bars.addView(
+                View(ctx).apply { background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dpf(2f) } },
+                LinearLayout.LayoutParams(dp(5), dp(19)).apply { if (i == 1) leftMargin = dp(5) }
+            )
         }
-        pauseBtn.addView(pauseIcon, FrameLayout.LayoutParams(-1, -1))
+        val play = TextView(ctx).apply {
+            text = "▶"; setTextColor(Color.WHITE); textSize = 18f; gravity = Gravity.CENTER; visibility = View.GONE
+        }
+        pauseBtn.addView(bars, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        pauseBtn.addView(play, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
         pauseBtn.setOnClickListener {
             main.removeCallbacks(collapseRunnable)
             main.postDelayed(collapseRunnable, 6000)
             setPausedUi(onTogglePause())
         }
-        row.addView(pauseBtn, LinearLayout.LayoutParams(dp(42), dp(42)))
+        row.addView(pauseBtn, LinearLayout.LayoutParams(dp(48), dp(48)))
 
+        // tombol stop: cincin putih + kotak merah
         val stopBtn = FrameLayout(ctx).apply { background = circle(null, true) }
         stopBtn.addView(
-            View(ctx).apply { background = GradientDrawable().apply { setColor(RED); cornerRadius = dp(3).toFloat() } },
-            FrameLayout.LayoutParams(dp(14), dp(14), Gravity.CENTER)
+            View(ctx).apply { background = GradientDrawable().apply { setColor(Color.parseColor("#FF453A")); cornerRadius = dpf(5f) } },
+            FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER)
         )
         stopBtn.setOnClickListener { collapse(); onStop() }
-        row.addView(stopBtn, LinearLayout.LayoutParams(dp(42), dp(42)).apply { leftMargin = dp(10) })
+        row.addView(stopBtn, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(17) })
 
         val lp = WindowManager.LayoutParams(
             cardW, cardH, windowType,
@@ -263,32 +275,46 @@ class IslandOverlay(
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = pillLp?.y ?: dp(10)
+            y = pillLp?.y ?: dp(4)
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             title = "ScreenRecorderIslandCard"
         }
-        card = row; cardTimer = ct; cardTitle = titleTv; cardPauseIcon = pauseIcon
+        card = row; cardTimer = ct; cardTitle = titleTv; cardBars = bars; cardPlay = play
         setPausedUi(paused)
         wm.addView(row, lp)
 
+        // pill "mengembang" menjadi kartu: bentuk membesar dulu, isi muncul menyusul
         pillView?.visibility = View.INVISIBLE
+        val pillCenterX = (pillLp?.x ?: 0) + pw / 2f
+        row.pivotX = cardW / 2f
         row.pivotY = 0f
-        row.alpha = 0f
-        row.scaleX = (pillLp?.width ?: dp(124)).toFloat() / cardW
-        row.scaleY = 0.5f
-        row.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(380)
-            .setInterpolator(OvershootInterpolator(0.9f)).start()
+        row.scaleX = pw.toFloat() / cardW
+        row.scaleY = ph.toFloat() / cardH
+        row.translationX = pillCenterX - sw / 2f
+        for (i in 0 until row.childCount) row.getChildAt(i).alpha = 0f
+        row.animate().scaleX(1f).scaleY(1f).translationX(0f).setDuration(420)
+            .setInterpolator(OvershootInterpolator(0.8f)).start()
+        for (i in 0 until row.childCount) {
+            row.getChildAt(i).animate().alpha(1f).setStartDelay(150).setDuration(220).start()
+        }
         main.postDelayed(collapseRunnable, 6000)
     }
 
     private fun collapse() {
         main.removeCallbacks(collapseRunnable)
         val c = card ?: return
-        card = null; cardTimer = null; cardTitle = null; cardPauseIcon = null
-        c.animate().alpha(0f).scaleX(0.7f).setDuration(150).withEndAction {
-            runCatching { wm.removeView(c) }
-            pillView?.visibility = View.VISIBLE
-        }.start()
+        card = null; cardTimer = null; cardTitle = null; cardBars = null; cardPlay = null
+        val (sw, _) = Caps.screenSize(ctx)
+        val pw = pillLp?.width ?: dp(148)
+        val ph = pillLp?.height ?: dp(36)
+        val pillCenterX = (pillLp?.x ?: 0) + pw / 2f
+        for (i in 0 until c.childCount) c.getChildAt(i).animate().alpha(0f).setStartDelay(0).setDuration(100).start()
+        c.animate().scaleX(pw.toFloat() / max(1, c.width)).scaleY(ph.toFloat() / max(1, c.height))
+            .translationX(pillCenterX - sw / 2f).setDuration(260)
+            .setInterpolator(DecelerateInterpolator()).withEndAction {
+                pillView?.visibility = View.VISIBLE
+                runCatching { wm.removeView(c) }
+            }.start()
     }
 
     private fun setPausedUi(p: Boolean) {
@@ -300,7 +326,8 @@ class IslandOverlay(
         val color = if (p) GRAY else RED
         pillDotBg.setColor(color); cardDotBg.setColor(color)
         pillDot?.alpha = 1f
-        cardPauseIcon?.text = if (p) "▶" else "❚❚"
+        cardBars?.visibility = if (p) View.GONE else View.VISIBLE
+        cardPlay?.visibility = if (p) View.VISIBLE else View.GONE
         cardTitle?.text = if (p) "Dijeda" else "Merekam layar"
     }
 
