@@ -66,9 +66,11 @@ class MainActivity : Activity() {
         }
         updateFps()
 
-        val hz = windowManager.defaultDisplay.refreshRate.toInt()
+        val disp = windowManager.defaultDisplay
+        val hz = disp.refreshRate.toInt()
+        val maxHz = runCatching { disp.supportedModes.maxOf { it.refreshRate }.toInt() }.getOrDefault(hz)
         val k2 = if (Caps.supports2K(this)) "2K 120fps didukung perangkat ini." else "2K 120fps tidak didukung perangkat ini."
-        tvInfo.text = "$k2\nRefresh rate layar: $hz Hz. Frame unik tidak bisa melebihi refresh rate layar."
+        tvInfo.text = "$k2\nLayar: sekarang $hz Hz, maksimum $maxHz Hz. File selalu memakai fps yang dipilih; jika layar lebih lambat dari itu, frame terakhir diulang."
 
         btn.setOnClickListener { if (RecorderService.isRecording) stopRec() else begin() }
     }

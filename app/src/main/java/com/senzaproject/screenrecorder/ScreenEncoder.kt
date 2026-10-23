@@ -45,7 +45,10 @@ class ScreenEncoder(
     private var aEnc: MediaCodec? = null
     private var devRec: AudioRecord? = null
     private var micRec: AudioRecord? = null
+    /** Surface tujuan VirtualDisplay (lewat FramePump bila tersedia, jika tidak langsung ke encoder). */
     lateinit var surface: Surface
+    private lateinit var encInputSurface: Surface
+    private var pump: FramePump? = null
 
     private val lock = ReentrantLock()
     private val cond = lock.newCondition()
@@ -66,12 +69,12 @@ class ScreenEncoder(
     /** Jeda / lanjutkan rekaman. Waktu jeda dipotong dari timeline video & audio. */
     fun setPaused(p: Boolean) {
         if (p == isPaused) return
+        pump?.paused = p
         if (p) {
             pauseStartUs = System.nanoTime() / 1000
             isPaused = true
         } else {
             pausedUs += System.nanoTime() / 1000 - pauseStartUs
-            waitKey = true
             isPaused = false
             runCatching {
                 vEnc.setParameters(android.os.Bundle().apply {
@@ -98,6 +101,16 @@ class ScreenEncoder(
     @SuppressLint("MissingPermission")
     fun prepare() {
         configureVideo()
+        // Frame rate konstan: layar -> GL -> encoder pada fps tepat. Jika GL gagal, pakai jalur langsung.
+        try {
+            val fp = FramePump(width, height, fps, encInputSurface)
+            fp.prepare()
+            pump = fp
+            surface = fp.inputSurface!!
+        } catch (e: Exception) {
+            pump = null
+            surface = encInputSurface
+        }
 
         if (hasAudio) {
             if (deviceAudio) {
@@ -151,7 +164,8 @@ class ScreenEncoder(
             for (level in 0..2) {
                 try {
                     vEnc = createVideoEncoder(sw, sh, level)
-                    surface = vEnc.createInputSurface()
+                    encInputSurface = vEnc.createInputSurface()
+                    surface = encInputSurface
                     width = sw; height = sh
                     return
                 } catch (e: Exception) {
@@ -202,12 +216,14 @@ class ScreenEncoder(
         running = true
         vEnc.start()
         aEnc?.start()
+        pump?.start(baseUs * 1000)
         vThread = Thread({ videoLoop() }, "enc-video").also { it.start() }
         if (hasAudio) aThread = Thread({ audioLoop() }, "enc-audio").also { it.start() }
     }
 
     fun stop() {
         running = false
+        pump?.stop()
         runCatching { vThread?.join(5000) }
         lock.withLock {
             if (!started) { aborted = true; cond.signalAll() }
@@ -220,6 +236,7 @@ class ScreenEncoder(
         runCatching { if (started) muxer.stop() }
         runCatching { muxer.release() }
         runCatching { surface.release() }
+        runCatching { encInputSurface.release() }
     }
 
     // ---------- video ----------
@@ -339,11 +356,17 @@ class ScreenEncoder(
 
     private fun adjustPts(isVideo: Boolean, info: MediaCodec.BufferInfo) {
         if (isVideo) {
-            if (firstVideoPts < 0) {
-                firstVideoPts = info.presentationTimeUs
-                firstVideoOffset = max(0L, System.nanoTime() / 1000 - baseUs)
+            var p: Long
+            if (pump != null) {
+                // timestamp dari FramePump sudah relatif terhadap awal rekaman (konstan per 1/fps)
+                p = info.presentationTimeUs - pausedUs
+            } else {
+                if (firstVideoPts < 0) {
+                    firstVideoPts = info.presentationTimeUs
+                    firstVideoOffset = max(0L, System.nanoTime() / 1000 - baseUs)
+                }
+                p = info.presentationTimeUs - firstVideoPts + firstVideoOffset - pausedUs
             }
-            var p = info.presentationTimeUs - firstVideoPts + firstVideoOffset - pausedUs
             if (p < lastVideoPts) p = lastVideoPts
             lastVideoPts = p
             info.presentationTimeUs = p

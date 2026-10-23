@@ -119,8 +119,8 @@ class RecorderService : Service() {
                 val acc = IslandAccessibilityService.instance
                 island = when {
                     // Lewat layanan aksesibilitas: window berada di ATAS status bar sehingga pill bisa disentuh
-                    acc != null -> IslandOverlay(acc, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, islCtl, toggle) { finish(null) }
-                    Settings.canDrawOverlays(this) -> IslandOverlay(this, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, islCtl, toggle) { finish(null) }
+                    acc != null -> IslandOverlay(acc, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, islCtl, fps, toggle) { finish(null) }
+                    Settings.canDrawOverlays(this) -> IslandOverlay(this, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, islCtl, fps, toggle) { finish(null) }
                     else -> null
                 }
                 island?.show()

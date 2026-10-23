@@ -1,5 +1,8 @@
 package com.senzaproject.screenrecorder
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -36,6 +39,8 @@ class IslandOverlay(
     /** TYPE_ACCESSIBILITY_OVERLAY (di atas status bar, bisa disentuh) atau TYPE_APPLICATION_OVERLAY. */
     private val windowType: Int,
     private val controls: Boolean,
+    /** fps rekaman; dipakai sebagai petunjuk refresh rate layar (0 = abaikan). */
+    private val refreshHz: Int,
     /** Dipanggil saat tombol Pause/Resume ditekan. Mengembalikan status dijeda yang baru. */
     private val onTogglePause: () -> Boolean,
     private val onStop: () -> Unit
@@ -69,6 +74,25 @@ class IslandOverlay(
 
     private fun dp(v: Int) = (v * ctx.resources.displayMetrics.density).toInt()
     private fun dpf(v: Float) = v * ctx.resources.displayMetrics.density
+
+    /** Minta layar berjalan pada refresh rate setinggi fps rekaman (best effort, tergantung perangkat). */
+    private fun applyRefreshHint(lp: WindowManager.LayoutParams) {
+        if (refreshHz <= 0) return
+        runCatching {
+            val dm = ctx.getSystemService(android.hardware.display.DisplayManager::class.java)
+            val d = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)
+            val cur = d.mode
+            val modes = d.supportedModes.filter {
+                it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight
+            }
+            val best = modes.filter { it.refreshRate >= refreshHz - 0.5f }.minByOrNull { it.refreshRate }
+                ?: modes.maxByOrNull { it.refreshRate }
+            if (best != null) {
+                lp.preferredDisplayModeId = best.modeId
+                lp.preferredRefreshRate = best.refreshRate
+            }
+        }
+    }
 
     // ---------- geometri: ramping & simetris terhadap kamera depan ----------
     /** @return [lebar, tinggi, x, y] pill dalam piksel layar. [rects] harus dalam koordinat LAYAR. */
@@ -185,6 +209,7 @@ class IslandOverlay(
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             title = "ScreenRecorderIsland"
         }
+        applyRefreshHint(lp)
         pillView = root; pillLp = lp; pillTimer = t; pillDot = d
         wm.addView(root, lp)
 
@@ -280,6 +305,7 @@ class IslandOverlay(
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             title = "ScreenRecorderIslandCard"
         }
+        applyRefreshHint(lp)
         card = row; cardTimer = ct; cardTitle = titleTv; cardBars = bars; cardPlay = play
         setPausedUi(paused)
         wm.addView(row, lp)
@@ -292,11 +318,25 @@ class IslandOverlay(
         row.scaleY = ph.toFloat() / cardH
         row.translationX = pillCenterX - sw / 2f
         for (i in 0 until row.childCount) row.getChildAt(i).alpha = 0f
+        row.alpha = 0f
+        val s0x = row.scaleX
+        val s0y = row.scaleY
+        val tx0 = row.translationX
         val startAnim = {
-            row.animate().scaleX(1f).scaleY(1f).translationX(0f).setDuration(380)
-                .setInterpolator(OvershootInterpolator(0.5f)).start()
-            for (i in 0 until row.childCount) {
-                row.getChildAt(i).animate().alpha(1f).setStartDelay(140).setDuration(200).start()
+            ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 400
+                interpolator = OvershootInterpolator(0.5f)
+                addUpdateListener {
+                    val p = it.animatedValue as Float
+                    val pc = p.coerceIn(0f, 1f)
+                    row.scaleX = s0x + (1f - s0x) * p
+                    row.scaleY = s0y + (1f - s0y) * p
+                    row.translationX = tx0 * (1f - p)
+                    row.alpha = (pc * 4f).coerceIn(0f, 1f)
+                    val ca = ((pc - 0.4f) / 0.4f).coerceIn(0f, 1f)
+                    for (i in 0 until row.childCount) row.getChildAt(i).alpha = ca
+                }
+                start()
             }
         }
         row.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
@@ -317,12 +357,29 @@ class IslandOverlay(
         val pw = pillLp?.width ?: dp(148)
         val ph = pillLp?.height ?: dp(36)
         val pillCenterX = (pillLp?.x ?: 0) + pw / 2f
-        for (i in 0 until c.childCount) c.getChildAt(i).animate().alpha(0f).setStartDelay(0).setDuration(100).start()
-        c.animate().scaleX(pw.toFloat() / max(1, c.width)).scaleY(ph.toFloat() / max(1, c.height))
-            .translationX(pillCenterX - sw / 2f).setDuration(260)
-            .setInterpolator(DecelerateInterpolator()).withEndAction {
-                runCatching { wm.removeView(c) }
-            }.start()
+        val sx1 = pw.toFloat() / max(1, c.width)
+        val sy1 = ph.toFloat() / max(1, c.height)
+        val tx1 = pillCenterX - sw / 2f
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 260
+            interpolator = DecelerateInterpolator()
+            addUpdateListener {
+                val q = it.animatedValue as Float
+                c.scaleX = 1f + (sx1 - 1f) * q
+                c.scaleY = 1f + (sy1 - 1f) * q
+                c.translationX = tx1 * q
+                // isi memudar dulu, lalu kartu memudar sehingga pill di bawahnya terlihat mulus
+                val ca = (1f - q / 0.35f).coerceIn(0f, 1f)
+                for (i in 0 until c.childCount) c.getChildAt(i).alpha = ca
+                c.alpha = if (q < 0.6f) 1f else (1f - (q - 0.6f) / 0.4f).coerceIn(0f, 1f)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    runCatching { wm.removeView(c) }
+                }
+            })
+            start()
+        }
     }
 
     private fun setPausedUi(p: Boolean) {
