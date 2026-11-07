@@ -153,6 +153,7 @@ class MainActivity : Activity() {
             putExtra("data", data)
             putExtra("w", w)
             putExtra("h", h)
+            putExtra("short", res.shortSide)
             putExtra("fps", fps)
             putExtra("dpi", resources.displayMetrics.densityDpi)
             putExtra("dev", swDev.isChecked)

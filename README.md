@@ -5,6 +5,7 @@ Oleh **SenzaProject**
 - 2K otomatis muncul hanya jika perangkat mendukung
 - Suara perangkat (internal) dan suara luar (mikrofon) bisa dihidupkan/dimatikan sendiri-sendiri, atau dicampur
 - Hasil di `Movies/ScreenRecorder`
+- Layar diputar saat merekam (mis. beranda portrait lalu buka game landscape): rekaman otomatis pindah ke file baru berukuran sesuai orientasi (`Screen_..._2.mp4`, dst.), sehingga game tampil penuh, tidak mengecil di tengah frame. Ada jeda singkat (kurang dari 1 detik) saat pergantian file.
 
 ## Build APK
 Push ke GitHub, lalu buka tab **Actions** > **Build APK** > unduh artifact `Screen-Recorder-APK`.

@@ -1,9 +1,11 @@
 package com.senzaproject.screenrecorder
 
 import android.content.Context
+import android.hardware.display.DisplayManager
 import android.media.MediaCodecList
 import android.os.Build
 import android.util.DisplayMetrics
+import android.view.Display
 import android.view.WindowManager
 import kotlin.math.max
 import kotlin.math.min
@@ -43,12 +45,39 @@ object Caps {
         }
     }
 
+    /**
+     * Ukuran layar fisik SAAT INI (ikut rotasi). Dipakai Service yang memantau rotasi:
+     * WindowMetrics dari context non-visual tidak dijamin ikut berubah saat layar diputar.
+     */
+    @Suppress("DEPRECATION")
+    fun displaySize(ctx: Context): Pair<Int, Int> {
+        val d = ctx.getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY)
+            ?: return screenSize(ctx)
+        val m = DisplayMetrics()
+        d.getRealMetrics(m)
+        return m.widthPixels to m.heightPixels
+    }
+
+    fun isLandscapeNow(ctx: Context): Boolean = displaySize(ctx).let { it.first > it.second }
+
     /** Ukuran video mengikuti rasio layar & orientasi saat ini. */
     fun dims(ctx: Context, shortSide: Int): Pair<Int, Int> {
         val (sw, sh) = screenSize(ctx)
+        val (wa, ha) = alignment()
+        return dimsFor(sw, sh, shortSide, wa, ha)
+    }
+
+    /** Sama seperti [dims], tetapi memakai ukuran layar terkini (dipakai saat layar diputar di tengah rekaman). */
+    fun dimsNow(ctx: Context, shortSide: Int): Pair<Int, Int> {
+        val (sw, sh) = displaySize(ctx)
+        val (wa, ha) = alignment()
+        return dimsFor(sw, sh, shortSide, wa, ha)
+    }
+
+    /** Hitungan murni (tanpa Android) agar bisa diuji: layar [sw]x[sh], sisi pendek video [shortSide], alignment encoder [wa]x[ha]. */
+    internal fun dimsFor(sw: Int, sh: Int, shortSide: Int, wa: Int, ha: Int): Pair<Int, Int> {
         val sMin = min(sw, sh)
         val sMax = max(sw, sh)
-        val (wa, ha) = alignment()
         val shortA = if (sw <= sh) wa else ha
         val longA = if (sw <= sh) ha else wa
         val s = roundTo(shortSide, shortA)

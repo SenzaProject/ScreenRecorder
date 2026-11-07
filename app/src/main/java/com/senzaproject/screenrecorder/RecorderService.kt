@@ -16,6 +16,7 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.view.Display
 import android.view.WindowManager
 import android.os.Handler
 import android.os.IBinder
@@ -26,6 +27,7 @@ import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.min
 
 class RecorderService : Service() {
 
@@ -39,24 +41,67 @@ class RecorderService : Service() {
         private const val NOTIF_RESULT_ID = 2
         private const val TAG = "RecorderService"
 
+        /** Orientasi layar harus stabil selama ini sebelum rekaman pindah ke file baru (menahan kedipan saat transisi/animasi). */
+        private const val ROTATE_SETTLE_MS = 600L
+
         @Volatile var isRecording = false
         /** (sedangMerekam, pesan) */
         var listener: ((Boolean, String?) -> Unit)? = null
     }
 
+    /**
+     * Satu file MP4 = satu segmen. Ukuran video tidak bisa berubah di tengah file, jadi saat layar diputar
+     * (mis. beranda portrait -> game landscape) rekaman pindah ke segmen baru yang ukurannya mengikuti
+     * orientasi baru. Dengan begitu isi layar selalu memenuhi frame, tidak mengecil di tengah.
+     */
+    private class Segment(
+        val enc: ScreenEncoder,
+        val pfd: ParcelFileDescriptor,
+        val uri: Uri,
+        val landscape: Boolean
+    )
+
+    /** Hasil penutupan satu segmen. [uri] null = file dibuang (gagal / kosong). */
+    private class Outcome(val uri: Uri?, val error: String?, val note: String?)
+
     private var projection: MediaProjection? = null
-    private var encoder: ScreenEncoder? = null
+    private var seg: Segment? = null
     private var display: VirtualDisplay? = null
-    private var pfd: ParcelFileDescriptor? = null
-    private var uri: Uri? = null
     private var island: IslandOverlay? = null
     private val main = Handler(Looper.getMainLooper())
     /** true selama file sedang difinalisasi di thread latar (main thread tidak boleh diblokir). */
     private var finishing = false
 
+    // Parameter sesi rekaman (tetap selama satu sesi)
+    private var recFps = 30
+    private var recDpi = 320
+    private var recShort = 1080
+    private var recDev = false
+    private var recMic = false
+    private var baseName = ""
+    private var segCount = 0
+
+    // Status sesi (hanya disentuh dari main thread)
+    private var paused = false
+    private var rotating = false
+    private var rotationDisabled = false
+    private var pendingFinish = false
+    private var pendingError: String? = null
+    private val outcomes = mutableListOf<Outcome>()
+
     private val projectionCb = object : MediaProjection.Callback() {
         override fun onStop() { finish(null) }
     }
+
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId == Display.DEFAULT_DISPLAY) scheduleOrientationCheck()
+        }
+    }
+
+    private val orientationCheck = Runnable { checkOrientation() }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -80,7 +125,7 @@ class RecorderService : Service() {
     @Suppress("DEPRECATION")
     private fun startRecording(i: Intent) {
         // Sudah merekam / sedang menyimpan: abaikan permintaan kedua (token proyeksi baru tidak dipakai)
-        if (finishing || projection != null || encoder != null) {
+        if (finishing || projection != null || seg != null) {
             notifyState("Rekaman sebelumnya masih berjalan atau sedang disimpan")
             return
         }
@@ -94,6 +139,19 @@ class RecorderService : Service() {
         val islCtl = i.getBooleanExtra("islandCtl", true)
         val code = i.getIntExtra("code", 0)
         val data = i.getParcelableExtra<Intent>("data")
+
+        recFps = fps
+        recDpi = dpi
+        recShort = i.getIntExtra("short", min(w, h))
+        recDev = dev
+        recMic = mic
+        segCount = 0
+        paused = false
+        rotating = false
+        rotationDisabled = false
+        pendingFinish = false
+        pendingError = null
+        outcomes.clear()
 
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Perekaman layar", NotificationManager.IMPORTANCE_LOW))
@@ -116,32 +174,23 @@ class RecorderService : Service() {
             // Wajib didaftarkan sebelum createVirtualDisplay (Android 14+)
             p.registerCallback(projectionCb, main)
 
-            val name = "Screen_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".mp4"
-            val values = ContentValues().apply {
-                put(MediaStore.Video.Media.DISPLAY_NAME, name)
-                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/ScreenRecorder")
-                put(MediaStore.Video.Media.IS_PENDING, 1)
-            }
-            val newUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                ?: throw IllegalStateException("tidak bisa membuat file di penyimpanan")
-            uri = newUri
-            val descriptor = contentResolver.openFileDescriptor(newUri, "rw")
-                ?: throw IllegalStateException("tidak bisa membuka file untuk ditulis")
-            pfd = descriptor
-
-            val bitrate = Caps.bitrateFor(w, h, fps)
-            val e = ScreenEncoder(w, h, fps, bitrate, descriptor.fileDescriptor, p, dev, mic)
-            encoder = e
-            e.onFatal = { msg -> main.post { finish("Rekaman berhenti: $msg") } }
-            e.prepare()
-            e.start()
+            baseName = "Screen_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val s = createSegment(p, w, h)
+            seg = s
+            val e = s.enc
+            // Android 14+: satu proyeksi hanya boleh membuat SATU VirtualDisplay. Saat layar diputar,
+            // display yang sama di-resize dan surface-nya diganti (lihat rotateSegment).
             display = p.createVirtualDisplay(
                 "ScreenRecorder", e.width, e.height, dpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 e.surface, null, null
             )
             isRecording = true
+            safely("pantau rotasi layar") {
+                getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, main)
+            }
+            // Layar mungkin sudah berputar di antara permintaan ukuran dan sekarang
+            scheduleOrientationCheck()
             var islandNote = ""
             if (isl) {
                 try {
@@ -175,17 +224,166 @@ class RecorderService : Service() {
         }
     }
 
+    // ---------- segmen ----------
+
+    /**
+     * Membuat file MediaStore + encoder + mulai merekam ke dalamnya. Memblokir (GL, codec, audio);
+     * aman dipanggil dari thread latar. Jika gagal, semua yang sudah dibuat dibersihkan lalu exception dilempar.
+     */
+    private fun createSegment(p: MediaProjection, w: Int, h: Int): Segment {
+        segCount++
+        val name = baseName + (if (segCount > 1) "_$segCount" else "") + ".mp4"
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, name)
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/ScreenRecorder")
+            put(MediaStore.Video.Media.IS_PENDING, 1)
+        }
+        val newUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("tidak bisa membuat file di penyimpanan")
+        var descriptor: ParcelFileDescriptor? = null
+        var enc: ScreenEncoder? = null
+        try {
+            val pfd = contentResolver.openFileDescriptor(newUri, "rw")
+                ?: throw IllegalStateException("tidak bisa membuka file untuk ditulis")
+            descriptor = pfd
+            val e = ScreenEncoder(
+                w, h, recFps, Caps.bitrateFor(w, h, recFps),
+                pfd.fileDescriptor, p, recDev, recMic
+            )
+            enc = e
+            e.onFatal = { msg -> main.post { if (!finishing) finish("Rekaman berhenti: $msg") } }
+            e.prepare()
+            e.start()
+            return Segment(e, pfd, newUri, e.width > e.height)
+        } catch (t: Throwable) {
+            enc?.let { x -> runCatching { x.stop() } }
+            runCatching { descriptor?.close() }
+            runCatching { contentResolver.delete(newUri, null, null) }
+            throw t
+        }
+    }
+
+    /**
+     * Menutup satu segmen (blokir; thread latar saja). [fatal] != null = rekaman gagal, file dibuang.
+     * Segmen tanpa satu pun frame juga dibuang. Display HARUS sudah dilepas dari surface segmen ini.
+     */
+    private fun finalizeSegment(s: Segment, fatal: String?, requireFrames: Boolean): Outcome {
+        var failed = fatal
+        var note: String? = null
+        val stopErr: String? = try {
+            s.enc.stop()
+        } catch (t: Throwable) {
+            Log.e(TAG, "encoder.stop gagal", t)
+            "Gagal menyelesaikan file: ${t.message}"
+        }
+        if (failed == null && stopErr != null) failed = stopErr
+        if (failed == null && requireFrames && s.enc.videoSamples == 0L) failed = "Tidak ada frame yang terekam"
+        if (failed == null && s.enc.error != null) note = s.enc.error
+        safely("tutup file") { s.pfd.close() }
+        safely("finalisasi MediaStore") {
+            if (failed != null) {
+                contentResolver.delete(s.uri, null, null)
+            } else {
+                val v = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+                contentResolver.update(s.uri, v, null, null)
+            }
+        }
+        return Outcome(if (failed == null) s.uri else null, failed, note)
+    }
+
+    // ---------- rotasi layar ----------
+
+    private fun scheduleOrientationCheck() {
+        main.removeCallbacks(orientationCheck)
+        main.postDelayed(orientationCheck, ROTATE_SETTLE_MS)
+    }
+
+    private fun checkOrientation() {
+        val cur = seg ?: return
+        if (finishing || rotating || rotationDisabled) return
+        if (Caps.isLandscapeNow(this) != cur.landscape) rotateSegment(cur)
+    }
+
+    /** Menutup segmen lama dan memulai segmen baru berukuran sesuai orientasi sekarang. Berjalan di thread latar. */
+    private fun rotateSegment(old: Segment) {
+        val p = projection ?: return
+        rotating = true
+        // Hentikan aliran frame ke segmen lama sebelum ditutup (display tetap hidup, hanya tanpa surface)
+        safely("lepas surface") { display?.setSurface(null) }
+        val (w, h) = Caps.dimsNow(this, recShort)
+        Thread({
+            val outcome = finalizeSegment(old, null, true)
+            var next: Segment? = null
+            var fellBack = false
+            var err: String? = null
+            try {
+                next = createSegment(p, w, h)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Segmen baru ${w}x$h gagal dibuat, memakai ukuran lama", t)
+                try {
+                    // Cadangan: lanjut dengan ukuran sebelumnya (isi layar bisa mengecil, tapi rekaman tidak putus)
+                    next = createSegment(p, old.enc.width, old.enc.height)
+                    fellBack = true
+                } catch (t2: Throwable) {
+                    Log.e(TAG, "Segmen cadangan juga gagal", t2)
+                    err = t2.message ?: t.message ?: "tidak diketahui"
+                }
+            }
+            val made = next
+            val fb = fellBack
+            val e = err
+            main.post { onRotated(outcome, made, fb, e) }
+        }, "rec-rotate").start()
+    }
+
+    private fun onRotated(outcome: Outcome, next: Segment?, fellBack: Boolean, err: String?) {
+        outcomes += outcome
+        rotating = false
+        if (next == null) {
+            seg = null
+            val e = pendingError
+            pendingFinish = false
+            pendingError = null
+            finish(e ?: "tidak bisa melanjutkan rekaman setelah layar diputar ($err)")
+            return
+        }
+        seg = next
+        if (fellBack) rotationDisabled = true
+        if (pendingFinish) {
+            // Stop diminta saat pergantian segmen berlangsung: tutup segmen baru ini juga
+            val e = pendingError
+            pendingFinish = false
+            pendingError = null
+            finish(e)
+            return
+        }
+        if (paused) next.enc.setPaused(true)
+        try {
+            val d = display
+            d?.resize(next.enc.width, next.enc.height, recDpi)
+            d?.setSurface(next.enc.surface)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Gagal memasang segmen baru ke layar", t)
+            finish("Gagal melanjutkan rekaman setelah layar diputar: ${t.message}")
+            return
+        }
+        // Layar bisa berputar lagi selama pergantian berlangsung
+        scheduleOrientationCheck()
+    }
+
     /** Jeda/lanjut dari pill atau notifikasi. @return true jika sekarang dijeda. */
     private fun togglePause(): Boolean {
-        val enc = encoder ?: return false
-        if (finishing) return enc.isPaused
-        val np = !enc.isPaused
-        enc.setPaused(np)
-        island?.syncPaused(np)
+        val s = seg ?: return paused
+        if (finishing || rotating) return paused
+        paused = !paused
+        s.enc.setPaused(paused)
+        island?.syncPaused(paused)
+        val np = paused
         safely("perbarui notifikasi") {
             getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(np))
         }
-        return np
+        return paused
     }
 
     /**
@@ -194,7 +392,13 @@ class RecorderService : Service() {
      */
     private fun finish(error: String?) {
         if (finishing) return
-        if (projection == null && encoder == null) {
+        if (rotating) {
+            // Tunggu pergantian segmen selesai; onRotated memanggil finish lagi
+            pendingFinish = true
+            if (pendingError == null) pendingError = error
+            return
+        }
+        if (projection == null && seg == null && outcomes.isEmpty()) {
             // Gagal sebelum ada sesi (mis. startForeground ditolak): tetap beri tahu pengguna
             if (error != null) {
                 notifyResult(error, null)
@@ -205,52 +409,44 @@ class RecorderService : Service() {
             return
         }
         finishing = true
+        main.removeCallbacks(orientationCheck)
+        safely("lepas pemantau rotasi") {
+            getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
+        }
         safely("sembunyikan pill") { island?.hide() }
         island = null
         val wasRecording = isRecording
         isRecording = false
         notifyState(null)
-        val e = encoder
-        encoder = null
+        val cur = seg
+        seg = null
         safely("lepas VirtualDisplay") { display?.release() }
         display = null
         val p = projection
         projection = null
         safely("unregister callback") { p?.unregisterCallback(projectionCb) }
-        val u = uri
-        uri = null
-        val f = pfd
-        pfd = null
+        val earlier = outcomes.toList()
+        outcomes.clear()
 
         Thread({
-            var failed = error
-            var note: String? = null
-            if (e != null) {
-                val stopErr: String? = try {
-                    e.stop()
-                } catch (t: Throwable) {
-                    Log.e(TAG, "encoder.stop gagal", t)
-                    "Gagal menyelesaikan file: ${t.message}"
-                }
-                if (failed == null && stopErr != null) failed = stopErr
-                if (failed == null && wasRecording && e.videoSamples == 0L) failed = "Tidak ada frame yang terekam"
-                if (failed == null && e.error != null) note = "Tersimpan, tapi ada masalah: ${e.error}"
-            }
+            val all = earlier.toMutableList()
+            if (cur != null) all += finalizeSegment(cur, error, wasRecording)
             safely("hentikan proyeksi") { p?.stop() }
-            safely("tutup file") { f?.close() }
-            if (u != null) {
-                safely("finalisasi MediaStore") {
-                    if (failed != null) {
-                        contentResolver.delete(u, null, null)
-                    } else {
-                        val v = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
-                        contentResolver.update(u, v, null, null)
-                    }
+
+            val saved = all.mapNotNull { it.uri }
+            val msg: String = if (saved.isEmpty()) {
+                error ?: all.firstNotNullOfOrNull { it.error } ?: "Tidak ada frame yang terekam"
+            } else {
+                val note = all.firstNotNullOfOrNull { it.note }
+                when {
+                    error != null -> "$error (${saved.size} file sebelumnya tersimpan)"
+                    saved.size > 1 -> "Tersimpan ${saved.size} file di Movies/ScreenRecorder (layar diputar, tiap orientasi jadi file sendiri)"
+                    note != null -> "Tersimpan, tapi ada masalah: $note"
+                    else -> "Tersimpan di Movies/ScreenRecorder"
                 }
             }
-            val ok = failed == null
-            val msg = failed ?: note ?: "Tersimpan di Movies/ScreenRecorder"
-            main.post { completeFinish(msg, if (ok) u else null) }
+            val openUri = saved.lastOrNull()
+            main.post { completeFinish(msg, openUri) }
         }, "rec-finish").start()
     }
 
@@ -309,7 +505,7 @@ class RecorderService : Service() {
     }
 
     override fun onDestroy() {
-        if (!finishing && (projection != null || encoder != null)) finish(null)
+        if (!finishing && (projection != null || seg != null)) finish(null)
         super.onDestroy()
     }
 }
