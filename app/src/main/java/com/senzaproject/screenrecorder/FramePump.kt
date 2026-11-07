@@ -11,7 +11,8 @@ import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.opengl.Matrix
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
+import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -19,6 +20,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.LockSupport
+
+private const val TAG = "FramePump"
 
 /**
  * Pemompa frame dengan frame rate KONSTAN.
@@ -40,6 +43,10 @@ class FramePump(
     @Volatile var framesFromDisplay = 0L
         private set
 
+    /** Terisi jika loop menggambar berhenti karena error (encoder memantau ini). */
+    @Volatile var loopError: Throwable? = null
+        private set
+
     @Volatile private var running = false
     @Volatile private var startNs = 0L
     private val pending = AtomicInteger(0)
@@ -48,6 +55,7 @@ class FramePump(
     @Volatile private var initError: Throwable? = null
     private var thread: Thread? = null
     private var st: SurfaceTexture? = null
+    private var cbThread: HandlerThread? = null
 
     private val VS = """
         attribute vec4 aPos;
@@ -84,6 +92,7 @@ class FramePump(
         runCatching { thread?.join(2000) }
         runCatching { inputSurface?.release() }
         runCatching { st?.release() }
+        runCatching { cbThread?.quitSafely() }
     }
 
     private fun compile(type: Int, src: String): Int {
@@ -146,11 +155,16 @@ class FramePump(
 
             val s = SurfaceTexture(tex)
             s.setDefaultBufferSize(w, h)
-            s.setOnFrameAvailableListener({ pending.incrementAndGet(); framesFromDisplay++ }, Handler(Looper.getMainLooper()))
+            // Callback frame di thread sendiri, bukan main thread, agar UI tidak dibangunkan 60-120x per detik
+            val ht = HandlerThread("frame-cb").also { it.start() }
+            cbThread = ht
+            s.setOnFrameAvailableListener({ pending.incrementAndGet(); framesFromDisplay++ }, Handler(ht.looper))
             st = s
             inputSurface = Surface(s)
         } catch (th: Throwable) {
+            Log.e(TAG, "Inisialisasi GL gagal", th)
             initError = th
+            runCatching { cbThread?.quitSafely() }
             ready.countDown()
             cleanup(dpy, ctx, surf, prog, tex)
             return
@@ -171,6 +185,7 @@ class FramePump(
             val interval = 1_000_000_000L / fps
             var nTick = 0L
             var hasFrame = false
+            var texErrors = 0
 
             while (running) {
                 val deadline = startNs + nTick * interval
@@ -188,7 +203,11 @@ class FramePump(
                         repeat(c.coerceAtMost(8)) { s.updateTexImage() }
                         s.getTransformMatrix(mtx)
                         hasFrame = true
-                    } catch (e: Exception) {}
+                        texErrors = 0
+                    } catch (e: Exception) {
+                        Log.w(TAG, "updateTexImage gagal", e)
+                        if (++texErrors > 50) throw e
+                    }
                 }
 
                 if (hasFrame && !paused) {
@@ -204,7 +223,8 @@ class FramePump(
                     GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 8, txc)
                     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
                     EGLExt.eglPresentationTimeANDROID(dpy, surf, nTick * interval)
-                    EGL14.eglSwapBuffers(dpy, surf)
+                    if (!EGL14.eglSwapBuffers(dpy, surf))
+                        throw IllegalStateException("eglSwapBuffers gagal: 0x" + Integer.toHexString(EGL14.eglGetError()))
                     framesDrawn++
                 }
 
@@ -216,6 +236,8 @@ class FramePump(
                 }
             }
         } catch (th: Throwable) {
+            Log.e(TAG, "Loop frame pump berhenti", th)
+            loopError = th
         } finally {
             cleanup(dpy, ctx, surf, prog, tex)
         }

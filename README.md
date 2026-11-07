@@ -15,3 +15,10 @@ Butuh izin "Tampil di atas aplikasi lain". Matikan "Ketuk pill untuk Pause / Sto
 
 ### Agar pill bisa disentuh
 Status bar sebagian perangkat (mis. ColorOS) menelan sentuhan di area kamera. Aktifkan **Pengaturan > Aksesibilitas > Screen Recorder** (tombol "Aktifkan sentuh pill" di aplikasi). Layanan ini kosong dan hanya dipakai untuk menampilkan pill di atas status bar. Di Android 13+ mungkin perlu: Info aplikasi > menu titik tiga > Izinkan setelan terbatas.
+
+## Tanda tangan APK (agar update tidak bentrok)
+Tanpa secret, setiap build GitHub Actions memakai debug key acak, sehingga APK baru tidak bisa menimpa yang lama. Buat keystore sekali, lalu simpan di **Settings > Secrets and variables > Actions**:
+- `KEYSTORE_BASE64` = isi keystore dalam base64 (`base64 -w0 release.jks`)
+- `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`
+
+Workflow tidak pernah mencetak nilai secret. Setelah build, langkah "Verifikasi APK" menampilkan application ID, versi, dan sidik jari sertifikat (publik).

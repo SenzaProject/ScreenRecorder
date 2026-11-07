@@ -11,6 +11,8 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
+import android.os.SystemClock
+import android.util.Log
 import android.view.Surface
 import java.io.FileDescriptor
 import java.nio.ByteBuffer
@@ -37,9 +39,10 @@ class ScreenEncoder(
     companion object {
         private const val SR = 44100
         private const val FRAMES = 1024
+        private const val TAG = "ScreenEncoder"
     }
 
-    private val hasAudio = deviceAudio || micAudio
+    @Volatile private var hasAudio = deviceAudio || micAudio
     private lateinit var muxer: MediaMuxer
     private lateinit var vEnc: MediaCodec
     private var aEnc: MediaCodec? = null
@@ -57,30 +60,40 @@ class ScreenEncoder(
     private var started = false
     private var aborted = false
     @Volatile private var running = false
-    @Volatile var wrote = false
+    /** Jumlah sampel video yang benar-benar tertulis ke file (0 = tidak ada video). */
+    @Volatile var videoSamples = 0L
+        private set
     @Volatile var error: String? = null
+    /** Dipanggil dari thread encoder saat terjadi kegagalan yang tidak bisa dilanjutkan (mis. penyimpanan penuh). */
+    @Volatile var onFatal: ((String) -> Unit)? = null
+    @Volatile private var audioDead = false
 
     @Volatile var isPaused = false
         private set
     @Volatile private var waitKey = false
-    private var pausedUs = 0L
-    private var pauseStartUs = 0L
+    @Volatile private var pausedUs = 0L
+    @Volatile private var pauseStartUs = 0L
 
     /** Jeda / lanjutkan rekaman. Waktu jeda dipotong dari timeline video & audio. */
     fun setPaused(p: Boolean) {
         if (p == isPaused) return
-        pump?.paused = p
         if (p) {
             pauseStartUs = System.nanoTime() / 1000
             isPaused = true
+            pump?.paused = true
         } else {
             pausedUs += System.nanoTime() / 1000 - pauseStartUs
+            // Frame yang dibuang selama jeda memutus rantai prediksi: buang semua frame sampai keyframe berikutnya
+            waitKey = true
             isPaused = false
-            runCatching {
+            try {
                 vEnc.setParameters(android.os.Bundle().apply {
                     putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
                 })
+            } catch (e: Exception) {
+                Log.w(TAG, "Permintaan keyframe setelah resume gagal", e)
             }
+            pump?.paused = false
         }
     }
 
@@ -93,8 +106,8 @@ class ScreenEncoder(
     private var baseUs = 0L
     private var firstVideoPts = -1L
     private var firstVideoOffset = 0L
-    private var lastVideoPts = 0L
-    private var lastAudioPts = 0L
+    private var lastVideoPts = -1L
+    private var lastAudioPts = -1L
     private var vThread: Thread? = null
     private var aThread: Thread? = null
 
@@ -102,17 +115,34 @@ class ScreenEncoder(
     fun prepare() {
         configureVideo()
         // Frame rate konstan: layar -> GL -> encoder pada fps tepat. Jika GL gagal, pakai jalur langsung.
+        val fp = FramePump(width, height, fps, encInputSurface)
         try {
-            val fp = FramePump(width, height, fps, encInputSurface)
             fp.prepare()
             pump = fp
             surface = fp.inputSurface!!
         } catch (e: Exception) {
+            Log.w(TAG, "FramePump gagal, memakai jalur langsung ke encoder", e)
+            runCatching { fp.stop() }
             pump = null
             surface = encInputSurface
         }
 
         if (hasAudio) {
+            try {
+                setupAudio()
+            } catch (e: Exception) {
+                // Video tetap direkam tanpa suara; pengguna diberi tahu lewat [error]
+                Log.e(TAG, "Audio tidak bisa disiapkan, merekam tanpa suara", e)
+                releaseAudio()
+                hasAudio = false
+                error = "suara tidak bisa dipakai (${e.message})"
+            }
+        }
+        muxer = MediaMuxer(fd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun setupAudio() {
             if (deviceAudio) {
                 val cfg = AudioPlaybackCaptureConfiguration.Builder(projection)
                     .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
@@ -150,9 +180,18 @@ class ScreenEncoder(
             aEnc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).also {
                 it.configure(af, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             }
-        }
-        muxer = MediaMuxer(fd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        
     }
+
+    private fun releaseAudio() {
+        devRec?.let { runCatching { it.release() } }
+        micRec?.let { runCatching { it.release() } }
+        aEnc?.let { runCatching { it.release() } }
+        devRec = null
+        micRec = null
+        aEnc = null
+    }
+
 
     private fun align16(v: Int) = max(16, (v / 16.0).toInt() * 16 + if (v % 16 >= 8) 16 else 0)
 
@@ -221,7 +260,8 @@ class ScreenEncoder(
         if (hasAudio) aThread = Thread({ audioLoop() }, "enc-audio").also { it.start() }
     }
 
-    fun stop() {
+    /** Menyelesaikan file. Blokir hingga selesai (jangan panggil dari main thread). @return pesan error atau null. */
+    fun stop(): String? {
         running = false
         pump?.stop()
         runCatching { vThread?.join(5000) }
@@ -233,10 +273,22 @@ class ScreenEncoder(
         aEnc?.let { runCatching { it.stop() }; runCatching { it.release() } }
         devRec?.let { runCatching { it.stop() }; runCatching { it.release() } }
         micRec?.let { runCatching { it.stop() }; runCatching { it.release() } }
-        runCatching { if (started) muxer.stop() }
+        var result: String? = null
+        try {
+            if (started) muxer.stop()
+        } catch (e: Exception) {
+            Log.e(TAG, "muxer.stop gagal", e)
+            result = "Gagal menyelesaikan file video: ${e.message}"
+        }
         runCatching { muxer.release() }
         runCatching { surface.release() }
         runCatching { encInputSurface.release() }
+        return result
+    }
+
+    private fun reportFatal(msg: String) {
+        error = msg
+        onFatal?.invoke(msg)
     }
 
     // ---------- video ----------
@@ -245,12 +297,23 @@ class ScreenEncoder(
         try {
             var signaled = false
             var eos = false
+            var signalAt = 0L
             while (!eos) {
-                if (!running && !signaled) { vEnc.signalEndOfInputStream(); signaled = true }
+                if (!running && !signaled) {
+                    vEnc.signalEndOfInputStream()
+                    signaled = true
+                    signalAt = SystemClock.elapsedRealtime()
+                }
+                if (signaled && SystemClock.elapsedRealtime() - signalAt > 4000) {
+                    Log.w(TAG, "EOS video tidak diterima dalam 4 detik, finalisasi dipaksa")
+                    break
+                }
+                pump?.loopError?.let { throw IllegalStateException("pemompa frame berhenti: ${it.message}", it) }
                 eos = drain(vEnc, true, 10_000)
             }
         } catch (e: Exception) {
-            error = e.message
+            Log.e(TAG, "Loop video gagal", e)
+            if (running) reportFatal("video: ${e.message}") else error = "video: ${e.message}"
         }
     }
 
@@ -287,9 +350,31 @@ class ScreenEncoder(
             }
             val endPts = max(0L, startUs) + total * 1_000_000L / SR
             queueAudio(enc, null, endPts, true)
-            while (!drain(enc, false, 10_000)) { /* tunggu EOS */ }
+            val eosAt = SystemClock.elapsedRealtime()
+            while (!drain(enc, false, 10_000)) {
+                if (SystemClock.elapsedRealtime() - eosAt > 3000) {
+                    Log.w(TAG, "EOS audio tidak diterima dalam 3 detik")
+                    break
+                }
+            }
         } catch (e: Exception) {
-            error = e.message
+            Log.e(TAG, "Loop audio gagal", e)
+            audioFailed("suara berhenti (${e.message})")
+        }
+    }
+
+    /** Audio gagal: video tetap dilanjutkan. Jika muxer belum mulai, mulai tanpa track audio agar video tidak macet. */
+    private fun audioFailed(msg: String) {
+        error = msg
+        lock.withLock {
+            audioDead = true
+            try {
+                startMuxerIfReady()
+            } catch (e: Exception) {
+                Log.e(TAG, "Muxer gagal start tanpa audio", e)
+                reportFatal("muxer: ${e.message}")
+            }
+            cond.signalAll()
         }
     }
 
@@ -367,12 +452,12 @@ class ScreenEncoder(
                 }
                 p = info.presentationTimeUs - firstVideoPts + firstVideoOffset - pausedUs
             }
-            if (p < lastVideoPts) p = lastVideoPts
+            if (p <= lastVideoPts) p = lastVideoPts + 1
             lastVideoPts = p
             info.presentationTimeUs = p
         } else {
             var p = info.presentationTimeUs
-            if (p < lastAudioPts) p = lastAudioPts
+            if (p <= lastAudioPts) p = lastAudioPts + 1
             lastAudioPts = p
             info.presentationTimeUs = p
         }
@@ -381,11 +466,17 @@ class ScreenEncoder(
     private fun addTrack(isVideo: Boolean, fmt: MediaFormat) {
         lock.withLock {
             if (isVideo) vTrack = muxer.addTrack(fmt) else aTrack = muxer.addTrack(fmt)
-            if (vTrack >= 0 && (!hasAudio || aTrack >= 0)) {
-                muxer.start()
-                started = true
-                cond.signalAll()
-            }
+            startMuxerIfReady()
+        }
+    }
+
+    /** Harus dipanggil dengan [lock] terkunci. */
+    private fun startMuxerIfReady() {
+        if (started || aborted) return
+        if (vTrack >= 0 && (!hasAudio || aTrack >= 0 || audioDead)) {
+            muxer.start()
+            started = true
+            cond.signalAll()
         }
     }
 
@@ -393,8 +484,10 @@ class ScreenEncoder(
         lock.withLock {
             while (!started && !aborted) cond.await(100, TimeUnit.MILLISECONDS)
             if (aborted) return
-            muxer.writeSampleData(if (isVideo) vTrack else aTrack, buf, info)
-            wrote = true
+            val track = if (isVideo) vTrack else aTrack
+            if (track < 0) return // audio sudah dinyatakan gagal: abaikan sampelnya
+            muxer.writeSampleData(track, buf, info)
+            if (isVideo) videoSamples++
         }
     }
 }

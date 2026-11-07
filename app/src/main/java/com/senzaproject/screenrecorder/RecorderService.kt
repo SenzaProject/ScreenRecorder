@@ -22,6 +22,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
+import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -32,6 +33,10 @@ class RecorderService : Service() {
         const val ACTION_START = "start"
         const val ACTION_STOP = "stop"
         private const val CHANNEL = "rec"
+        private const val CHANNEL_RESULT = "rec_result"
+        private const val NOTIF_ID = 1
+        private const val NOTIF_RESULT_ID = 2
+        private const val TAG = "RecorderService"
 
         @Volatile var isRecording = false
         /** (sedangMerekam, pesan) */
@@ -45,6 +50,8 @@ class RecorderService : Service() {
     private var uri: Uri? = null
     private var island: IslandOverlay? = null
     private val main = Handler(Looper.getMainLooper())
+    /** true selama file sedang difinalisasi di thread latar (main thread tidak boleh diblokir). */
+    private var finishing = false
 
     private val projectionCb = object : MediaProjection.Callback() {
         override fun onStop() { finish(null) }
@@ -60,8 +67,21 @@ class RecorderService : Service() {
         return START_NOT_STICKY
     }
 
+    private inline fun safely(what: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (t: Throwable) {
+            Log.w(TAG, "$what gagal", t)
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun startRecording(i: Intent) {
+        // Sudah merekam / sedang menyimpan: abaikan permintaan kedua (token proyeksi baru tidak dipakai)
+        if (finishing || projection != null || encoder != null) {
+            notifyState("Rekaman sebelumnya masih berjalan atau sedang disimpan")
+            return
+        }
         val w = i.getIntExtra("w", 1280)
         val h = i.getIntExtra("h", 720)
         val fps = i.getIntExtra("fps", 30)
@@ -73,17 +93,25 @@ class RecorderService : Service() {
         val code = i.getIntExtra("code", 0)
         val data = i.getParcelableExtra<Intent>("data")
 
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL, "Perekaman layar", NotificationManager.IMPORTANCE_LOW)
-        )
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Perekaman layar", NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(NotificationChannel(CHANNEL_RESULT, "Hasil rekaman", NotificationManager.IMPORTANCE_DEFAULT))
         var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
         if (mic && Build.VERSION.SDK_INT >= 30) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-        startForeground(1, buildNotification(), type)
+        try {
+            startForeground(NOTIF_ID, buildNotification(), type)
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground gagal", e)
+            finish("Layanan perekaman tidak bisa dimulai: ${e.message}")
+            return
+        }
 
         try {
+            if (data == null) throw IllegalStateException("izin perekaman layar tidak diterima")
             val mpm = getSystemService(MediaProjectionManager::class.java)
-            val p = mpm.getMediaProjection(code, data!!)
+            val p = mpm.getMediaProjection(code, data)
             projection = p
+            // Wajib didaftarkan sebelum createVirtualDisplay (Android 14+)
             p.registerCallback(projectionCb, main)
 
             val name = "Screen_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".mp4"
@@ -93,12 +121,17 @@ class RecorderService : Service() {
                 put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/ScreenRecorder")
                 put(MediaStore.Video.Media.IS_PENDING, 1)
             }
-            uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-            pfd = contentResolver.openFileDescriptor(uri!!, "rw")
+            val newUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("tidak bisa membuat file di penyimpanan")
+            uri = newUri
+            val descriptor = contentResolver.openFileDescriptor(newUri, "rw")
+                ?: throw IllegalStateException("tidak bisa membuka file untuk ditulis")
+            pfd = descriptor
 
             val bitrate = Caps.bitrateFor(w, h, fps)
-            val e = ScreenEncoder(w, h, fps, bitrate, pfd!!.fileDescriptor, p, dev, mic)
+            val e = ScreenEncoder(w, h, fps, bitrate, descriptor.fileDescriptor, p, dev, mic)
             encoder = e
+            e.onFatal = { msg -> main.post { finish("Rekaman berhenti: $msg") } }
             e.prepare()
             e.start()
             display = p.createVirtualDisplay(
@@ -107,23 +140,32 @@ class RecorderService : Service() {
                 e.surface, null, null
             )
             isRecording = true
+            var islandNote = ""
             if (isl) {
-                val toggle: () -> Boolean = {
-                    val enc = encoder
-                    if (enc == null) false else {
-                        val np = !enc.isPaused
-                        enc.setPaused(np)
-                        np
+                try {
+                    val toggle: () -> Boolean = {
+                        val enc = encoder
+                        if (enc == null) false else {
+                            val np = !enc.isPaused
+                            enc.setPaused(np)
+                            np
+                        }
                     }
+                    val acc = IslandAccessibilityService.instance
+                    island = when {
+                        // Lewat layanan aksesibilitas: window berada di ATAS status bar sehingga pill bisa disentuh
+                        acc != null -> IslandOverlay(acc, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, islCtl, fps, toggle) { finish(null) }
+                        Settings.canDrawOverlays(this) -> IslandOverlay(this, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, islCtl, fps, toggle) { finish(null) }
+                        else -> null
+                    }
+                    island?.show()
+                } catch (ex: Exception) {
+                    // Pill hanya pelengkap: kegagalannya tidak boleh membatalkan rekaman
+                    Log.w(TAG, "Pill gagal ditampilkan", ex)
+                    safely("sembunyikan pill") { island?.hide() }
+                    island = null
+                    islandNote = " (pill tidak bisa ditampilkan)"
                 }
-                val acc = IslandAccessibilityService.instance
-                island = when {
-                    // Lewat layanan aksesibilitas: window berada di ATAS status bar sehingga pill bisa disentuh
-                    acc != null -> IslandOverlay(acc, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, islCtl, fps, toggle) { finish(null) }
-                    Settings.canDrawOverlays(this) -> IslandOverlay(this, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, islCtl, fps, toggle) { finish(null) }
-                    else -> null
-                }
-                island?.show()
             }
             val audio = when {
                 dev && mic -> "suara perangkat + mikrofon"
@@ -131,51 +173,109 @@ class RecorderService : Service() {
                 mic -> "mikrofon"
                 else -> "tanpa suara"
             }
-            notifyState("Merekam ${e.width}x${e.height} @ ${fps}fps ($audio)")
+            notifyState("Merekam ${e.width}x${e.height} @ ${fps}fps ($audio)$islandNote")
         } catch (e: Exception) {
+            Log.e(TAG, "Gagal memulai rekaman", e)
             finish("Gagal merekam: ${e.message}")
         }
     }
 
+    /**
+     * Menghentikan rekaman. Bagian cepat berjalan di main thread; finalisasi file (join thread encoder,
+     * muxer.stop) di thread latar supaya tidak memicu ANR.
+     */
     private fun finish(error: String?) {
-        if (projection == null && encoder == null) { stopSelf(); return }
-        island?.hide()
+        if (finishing) return
+        if (projection == null && encoder == null) {
+            // Gagal sebelum ada sesi (mis. startForeground ditolak): tetap beri tahu pengguna
+            if (error != null) {
+                notifyResult(error, null)
+                notifyState(error)
+            }
+            safely("stopForeground") { stopForeground(STOP_FOREGROUND_REMOVE) }
+            stopSelf()
+            return
+        }
+        finishing = true
+        safely("sembunyikan pill") { island?.hide() }
         island = null
         val wasRecording = isRecording
         isRecording = false
-        var failed = error
-        var note: String? = null
+        notifyState(null)
         val e = encoder
         encoder = null
-        if (e != null) {
-            runCatching { e.stop() }
-            if (failed == null && wasRecording && !e.wrote) failed = "Tidak ada frame yang terekam"
-            if (failed == null && e.error != null) note = "Tersimpan, tapi audio bermasalah: ${e.error}"
-        }
-        runCatching { display?.release() }
+        safely("lepas VirtualDisplay") { display?.release() }
         display = null
         val p = projection
         projection = null
-        runCatching { p?.unregisterCallback(projectionCb) }
-        runCatching { p?.stop() }
-        runCatching { pfd?.close() }
-        pfd = null
-        uri?.let {
-            if (failed != null) {
-                runCatching { contentResolver.delete(it, null, null) }
-            } else {
-                val v = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
-                runCatching { contentResolver.update(it, v, null, null) }
-            }
-        }
+        safely("unregister callback") { p?.unregisterCallback(projectionCb) }
+        val u = uri
         uri = null
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        val f = pfd
+        pfd = null
+
+        Thread({
+            var failed = error
+            var note: String? = null
+            if (e != null) {
+                val stopErr: String? = try {
+                    e.stop()
+                } catch (t: Throwable) {
+                    Log.e(TAG, "encoder.stop gagal", t)
+                    "Gagal menyelesaikan file: ${t.message}"
+                }
+                if (failed == null && stopErr != null) failed = stopErr
+                if (failed == null && wasRecording && e.videoSamples == 0L) failed = "Tidak ada frame yang terekam"
+                if (failed == null && e.error != null) note = "Tersimpan, tapi ada masalah: ${e.error}"
+            }
+            safely("hentikan proyeksi") { p?.stop() }
+            safely("tutup file") { f?.close() }
+            if (u != null) {
+                safely("finalisasi MediaStore") {
+                    if (failed != null) {
+                        contentResolver.delete(u, null, null)
+                    } else {
+                        val v = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+                        contentResolver.update(u, v, null, null)
+                    }
+                }
+            }
+            val ok = failed == null
+            val msg = failed ?: note ?: "Tersimpan di Movies/ScreenRecorder"
+            main.post { completeFinish(msg, if (ok) u else null) }
+        }, "rec-finish").start()
+    }
+
+    private fun completeFinish(msg: String, savedUri: Uri?) {
+        finishing = false
+        safely("stopForeground") { stopForeground(STOP_FOREGROUND_REMOVE) }
         stopSelf()
-        notifyState(failed ?: note ?: "Tersimpan di Movies/ScreenRecorder")
+        notifyResult(msg, savedUri)
+        notifyState(msg)
     }
 
     private fun notifyState(msg: String?) {
         main.post { listener?.invoke(isRecording, msg) }
+    }
+
+    /** Hasil rekaman juga lewat notifikasi, karena aplikasi biasanya di background saat rekaman berakhir. */
+    private fun notifyResult(msg: String, saved: Uri?) {
+        safely("notifikasi hasil") {
+            val b = Notification.Builder(this, CHANNEL_RESULT)
+                .setSmallIcon(R.drawable.ic_stat)
+                .setContentTitle(if (saved != null) "Rekaman tersimpan" else "Screen Recorder")
+                .setContentText(msg)
+                .setAutoCancel(true)
+            if (saved != null) {
+                val view = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(saved, "video/mp4")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                b.setContentIntent(
+                    PendingIntent.getActivity(this, 1, view, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                )
+            }
+            getSystemService(NotificationManager::class.java).notify(NOTIF_RESULT_ID, b.build())
+        }
     }
 
     private fun buildNotification(): Notification {
@@ -195,7 +295,7 @@ class RecorderService : Service() {
     }
 
     override fun onDestroy() {
-        if (projection != null || encoder != null) finish(null)
+        if (!finishing && (projection != null || encoder != null)) finish(null)
         super.onDestroy()
     }
 }
