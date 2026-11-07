@@ -32,6 +32,7 @@ class RecorderService : Service() {
     companion object {
         const val ACTION_START = "start"
         const val ACTION_STOP = "stop"
+        const val ACTION_PAUSE = "pause"
         private const val CHANNEL = "rec"
         private const val CHANNEL_RESULT = "rec_result"
         private const val NOTIF_ID = 1
@@ -63,6 +64,7 @@ class RecorderService : Service() {
         when (intent?.action) {
             ACTION_START -> startRecording(intent)
             ACTION_STOP -> finish(null)
+            ACTION_PAUSE -> togglePause()
         }
         return START_NOT_STICKY
     }
@@ -143,14 +145,7 @@ class RecorderService : Service() {
             var islandNote = ""
             if (isl) {
                 try {
-                    val toggle: () -> Boolean = {
-                        val enc = encoder
-                        if (enc == null) false else {
-                            val np = !enc.isPaused
-                            enc.setPaused(np)
-                            np
-                        }
-                    }
+                    val toggle: () -> Boolean = { togglePause() }
                     val acc = IslandAccessibilityService.instance
                     island = when {
                         // Lewat layanan aksesibilitas: window berada di ATAS status bar sehingga pill bisa disentuh
@@ -178,6 +173,19 @@ class RecorderService : Service() {
             Log.e(TAG, "Gagal memulai rekaman", e)
             finish("Gagal merekam: ${e.message}")
         }
+    }
+
+    /** Jeda/lanjut dari pill atau notifikasi. @return true jika sekarang dijeda. */
+    private fun togglePause(): Boolean {
+        val enc = encoder ?: return false
+        if (finishing) return enc.isPaused
+        val np = !enc.isPaused
+        enc.setPaused(np)
+        island?.syncPaused(np)
+        safely("perbarui notifikasi") {
+            getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(np))
+        }
+        return np
     }
 
     /**
@@ -278,18 +286,24 @@ class RecorderService : Service() {
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(paused: Boolean = false): Notification {
         val stop = PendingIntent.getService(
             this, 0,
             Intent(this, RecorderService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val pause = PendingIntent.getService(
+            this, 2,
+            Intent(this, RecorderService::class.java).setAction(ACTION_PAUSE),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val icon = Icon.createWithResource(this, R.drawable.ic_stat)
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat)
             .setContentTitle("Screen Recorder")
-            .setContentText("Sedang merekam layar…")
+            .setContentText(if (paused) "Rekaman dijeda" else "Sedang merekam layar…")
             .setOngoing(true)
+            .addAction(Notification.Action.Builder(icon, if (paused) "Lanjut" else "Jeda", pause).build())
             .addAction(Notification.Action.Builder(icon, "Stop", stop).build())
             .build()
     }
